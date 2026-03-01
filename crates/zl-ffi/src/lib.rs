@@ -17,11 +17,18 @@ pub struct ZlClient {
 struct Client {
     router: Router,
     subscriptions: Mutex<HashMap<String, Subscription>>,
+    buffers: Mutex<BufferStore>,
 }
 
 struct Subscription {
     stop_tx: Sender<()>,
     join: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BufferStore {
+    next_id: u64,
+    slots: HashMap<u64, Box<[u8]>>,
 }
 
 impl Drop for Client {
@@ -170,6 +177,10 @@ pub extern "C" fn zl_client_open(endpoint: *const c_char, out_client: *mut *mut 
         inner: Client {
             router: Router::new(),
             subscriptions: Mutex::new(HashMap::new()),
+            buffers: Mutex::new(BufferStore {
+                next_id: 1,
+                slots: HashMap::new(),
+            }),
         },
     });
 
@@ -352,17 +363,64 @@ pub extern "C" fn zl_unsubscribe(client: *mut ZlClient, topic: *const c_char) ->
 
 #[no_mangle]
 pub extern "C" fn zl_alloc_buffer(
-    _client: *mut ZlClient,
-    _size: u32,
-    _out_ref: *mut ZlBufferRef,
-    _out_ptr: *mut *mut c_void,
+    client: *mut ZlClient,
+    size: u32,
+    out_ref: *mut ZlBufferRef,
+    out_ptr: *mut *mut c_void,
 ) -> ZlStatus {
-    ZlStatus::Internal
+    if client.is_null() || out_ref.is_null() || out_ptr.is_null() || size == 0 {
+        return ZlStatus::InvalidArg;
+    }
+
+    // Safety: client pointer checked for null above.
+    let buffers = unsafe { &(*client).inner.buffers };
+    let mut store = match buffers.lock() {
+        Ok(v) => v,
+        Err(_) => return ZlStatus::Internal,
+    };
+
+    let buffer_id = store.next_id;
+    store.next_id = store.next_id.saturating_add(1);
+    if buffer_id == 0 {
+        return ZlStatus::Internal;
+    }
+
+    let mut data = vec![0u8; size as usize].into_boxed_slice();
+    let data_ptr = data.as_mut_ptr() as *mut c_void;
+    store.slots.insert(buffer_id, data);
+
+    // Safety: out pointers checked for null above and caller provides writable memory.
+    unsafe {
+        *out_ref = ZlBufferRef {
+            buffer_id,
+            offset: 0,
+            length: size,
+            flags: 0,
+        };
+        *out_ptr = data_ptr;
+    }
+
+    ZlStatus::Ok
 }
 
 #[no_mangle]
-pub extern "C" fn zl_release_buffer(_client: *mut ZlClient, _buffer_id: u64) -> ZlStatus {
-    ZlStatus::Internal
+pub extern "C" fn zl_release_buffer(client: *mut ZlClient, buffer_id: u64) -> ZlStatus {
+    if client.is_null() || buffer_id == 0 {
+        return ZlStatus::InvalidArg;
+    }
+
+    // Safety: client pointer checked for null above.
+    let buffers = unsafe { &(*client).inner.buffers };
+    let mut store = match buffers.lock() {
+        Ok(v) => v,
+        Err(_) => return ZlStatus::Internal,
+    };
+
+    if store.slots.remove(&buffer_id).is_some() {
+        ZlStatus::Ok
+    } else {
+        ZlStatus::NotFound
+    }
 }
 
 #[no_mangle]
@@ -476,6 +534,41 @@ mod tests {
 
         let st = zl_unsubscribe(client, topic.as_ptr());
         assert!(matches!(st, ZlStatus::Ok));
+
+        let st = zl_client_close(client);
+        assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_alloc_and_release_buffer() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("local").expect("valid cstring");
+        let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let mut buf_ref = ZlBufferRef {
+            buffer_id: 0,
+            offset: 0,
+            length: 0,
+            flags: 0,
+        };
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let st = zl_alloc_buffer(
+            client,
+            16,
+            &mut buf_ref as *mut ZlBufferRef,
+            &mut ptr as *mut *mut c_void,
+        );
+        assert!(matches!(st, ZlStatus::Ok));
+        assert_ne!(buf_ref.buffer_id, 0);
+        assert_eq!(buf_ref.length, 16);
+        assert!(!ptr.is_null());
+
+        let st = zl_release_buffer(client, buf_ref.buffer_id);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let st = zl_release_buffer(client, buf_ref.buffer_id);
+        assert!(matches!(st, ZlStatus::NotFound));
 
         let st = zl_client_close(client);
         assert!(matches!(st, ZlStatus::Ok));
