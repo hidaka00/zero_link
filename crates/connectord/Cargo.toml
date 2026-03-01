@@ -1,0 +1,8 @@
+[package]
+name = "connectord"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zl-router = { path = "../zl-router" }

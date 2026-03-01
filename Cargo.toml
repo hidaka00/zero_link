@@ -1,0 +1,18 @@
+[workspace]
+members = [
+  "crates/zl-proto",
+  "crates/zl-ipc",
+  "crates/zl-shm",
+  "crates/zl-router",
+  "crates/zl-metrics",
+  "crates/zl-ffi",
+  "crates/connectord",
+  "crates/zl-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["ZeroLink Contributors"]
