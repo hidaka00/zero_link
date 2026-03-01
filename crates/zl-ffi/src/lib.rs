@@ -158,6 +158,24 @@ fn buf_to_ffi(b: BufferRef) -> ZlBufferRef {
     }
 }
 
+fn extract_from_buffer_store(
+    store: &BufferStore,
+    buf_ref: ZlBufferRef,
+) -> Result<Vec<u8>, ZlStatus> {
+    let Some(slot) = store.slots.get(&buf_ref.buffer_id) else {
+        return Err(ZlStatus::NotFound);
+    };
+
+    let start = buf_ref.offset as usize;
+    let len = buf_ref.length as usize;
+    let end = start.saturating_add(len);
+    if end > slot.len() {
+        return Err(ZlStatus::InvalidArg);
+    }
+
+    Ok(slot[start..end].to_vec())
+}
+
 #[no_mangle]
 pub extern "C" fn zl_client_open(endpoint: *const c_char, out_client: *mut *mut ZlClient) -> ZlStatus {
     if out_client.is_null() {
@@ -225,22 +243,38 @@ pub extern "C" fn zl_publish(
     };
 
     // Safety: header pointer is non-null and points to immutable caller memory.
-    let header_rs = unsafe { header_from_ffi(*header) };
+    let mut header_rs = unsafe { header_from_ffi(*header) };
     // Safety: payload pointer handling checks null vs len.
-    let payload_vec = match unsafe { payload_to_vec(payload, payload_len) } {
+    let mut payload_vec = match unsafe { payload_to_vec(payload, payload_len) } {
         Ok(v) => v,
         Err(s) => return s,
     };
 
+    let mut buf_ref_rs = None;
+    if !buf_ref.is_null() {
+        // Safety: buf_ref pointer checked for null above.
+        let ffi_buf_ref = unsafe { *buf_ref };
+        buf_ref_rs = Some(buf_from_ffi(ffi_buf_ref));
+
+        if payload_vec.is_empty() {
+            // Safety: client pointer checked for null and only immutably accessed.
+            let buffers = unsafe { &(*client).inner.buffers };
+            let store = match buffers.lock() {
+                Ok(v) => v,
+                Err(_) => return ZlStatus::Internal,
+            };
+            payload_vec = match extract_from_buffer_store(&store, ffi_buf_ref) {
+                Ok(v) => v,
+                Err(s) => return s,
+            };
+            header_rs.size = payload_vec.len() as u32;
+        }
+    }
+
     let msg = RoutedMessage {
         header: header_rs,
         payload: payload_vec,
-        buffer_ref: if buf_ref.is_null() {
-            None
-        } else {
-            // Safety: buf_ref pointer checked for null above.
-            Some(buf_from_ffi(unsafe { *buf_ref }))
-        },
+        buffer_ref: buf_ref_rs,
     };
 
     // Safety: client pointer checked for null and only immutably accessed.
@@ -481,7 +515,7 @@ mod tests {
 
     extern "C" fn capture_callback(
         _topic: *const c_char,
-        _header: *const ZlMsgHeader,
+        header: *const ZlMsgHeader,
         payload: *const c_void,
         _buf_ref: *const ZlBufferRef,
         user_data: *mut c_void,
@@ -491,7 +525,8 @@ mod tests {
             let _ = tx.send(Vec::new());
             return;
         }
-        let bytes = unsafe { std::slice::from_raw_parts(payload as *const u8, 5) };
+        let payload_len = unsafe { (*header).size as usize };
+        let bytes = unsafe { std::slice::from_raw_parts(payload as *const u8, payload_len) };
         let _ = tx.send(bytes.to_vec());
     }
 
@@ -534,6 +569,107 @@ mod tests {
 
         let st = zl_unsubscribe(client, topic.as_ptr());
         assert!(matches!(st, ZlStatus::Ok));
+
+        let st = zl_client_close(client);
+        assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_publish_from_buffer_ref_roundtrip() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("local").expect("valid cstring");
+        let topic = CString::new("audio/asr/text").expect("valid cstring");
+        let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+        let st = zl_subscribe(client, topic.as_ptr(), Some(capture_callback), user_data);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let mut buf_ref = ZlBufferRef {
+            buffer_id: 0,
+            offset: 0,
+            length: 0,
+            flags: 0,
+        };
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let st = zl_alloc_buffer(
+            client,
+            16,
+            &mut buf_ref as *mut ZlBufferRef,
+            &mut ptr as *mut *mut c_void,
+        );
+        assert!(matches!(st, ZlStatus::Ok));
+        assert!(!ptr.is_null());
+
+        let bytes = b"hello";
+        unsafe {
+            let dst = std::slice::from_raw_parts_mut(ptr as *mut u8, 16);
+            dst[..bytes.len()].copy_from_slice(bytes);
+        }
+        buf_ref.length = bytes.len() as u32;
+
+        let header = ZlMsgHeader {
+            msg_type: 1,
+            timestamp_ns: 2,
+            size: 0,
+            schema_id: 1,
+            trace_id: 77,
+        };
+        let st = zl_publish(
+            client,
+            topic.as_ptr(),
+            &header as *const ZlMsgHeader,
+            std::ptr::null(),
+            0,
+            &buf_ref as *const ZlBufferRef,
+        );
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let got = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback should receive message");
+        assert_eq!(got, bytes);
+
+        let st = zl_release_buffer(client, buf_ref.buffer_id);
+        assert!(matches!(st, ZlStatus::Ok));
+        let st = zl_unsubscribe(client, topic.as_ptr());
+        assert!(matches!(st, ZlStatus::Ok));
+        let st = zl_client_close(client);
+        assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_publish_with_unknown_buffer_ref_fails() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("local").expect("valid cstring");
+        let topic = CString::new("audio/asr/text").expect("valid cstring");
+        let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let header = ZlMsgHeader {
+            msg_type: 1,
+            timestamp_ns: 2,
+            size: 0,
+            schema_id: 1,
+            trace_id: 88,
+        };
+        let bad_ref = ZlBufferRef {
+            buffer_id: 9999,
+            offset: 0,
+            length: 4,
+            flags: 0,
+        };
+        let st = zl_publish(
+            client,
+            topic.as_ptr(),
+            &header as *const ZlMsgHeader,
+            std::ptr::null(),
+            0,
+            &bad_ref as *const ZlBufferRef,
+        );
+        assert!(matches!(st, ZlStatus::NotFound));
 
         let st = zl_client_close(client);
         assert!(matches!(st, ZlStatus::Ok));
