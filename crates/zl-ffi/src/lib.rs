@@ -1,4 +1,5 @@
 use core::ffi::{c_char, c_void};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::sync::mpsc::{self, Sender};
@@ -29,6 +30,12 @@ struct Subscription {
 struct BufferStore {
     next_id: u64,
     slots: HashMap<u64, Box<[u8]>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ControlEnvelope {
+    command: String,
+    payload: Vec<u8>,
 }
 
 impl Drop for Client {
@@ -174,6 +181,14 @@ fn extract_from_buffer_store(
     }
 
     Ok(slot[start..end].to_vec())
+}
+
+fn encode_control_cbor(command: &str, payload: &[u8]) -> Result<Vec<u8>, ZlStatus> {
+    let envelope = ControlEnvelope {
+        command: command.to_string(),
+        payload: payload.to_vec(),
+    };
+    serde_cbor::to_vec(&envelope).map_err(|_| ZlStatus::Internal)
 }
 
 #[no_mangle]
@@ -475,21 +490,21 @@ pub extern "C" fn zl_send_control(
         Err(s) => return s,
     };
 
-    let mut body = command_str.as_bytes().to_vec();
-    if payload_len > 0 {
-        // Safety: payload handling checks null vs len.
-        let payload_vec = match unsafe { payload_to_vec(payload, payload_len) } {
-            Ok(v) => v,
-            Err(s) => return s,
-        };
-        body.extend_from_slice(&payload_vec);
-    }
+    // Safety: payload handling checks null vs len.
+    let payload_vec = match unsafe { payload_to_vec(payload, payload_len) } {
+        Ok(v) => v,
+        Err(s) => return s,
+    };
+    let body = match encode_control_cbor(command_str, &payload_vec) {
+        Ok(v) => v,
+        Err(s) => return s,
+    };
 
     let header = ZlMsgHeader {
         msg_type: 3,
         timestamp_ns: now_unix_ns(),
         size: body.len() as u32,
-        schema_id: 0,
+        schema_id: 1,
         trace_id: 0,
     };
 
@@ -706,6 +721,44 @@ mod tests {
         let st = zl_release_buffer(client, buf_ref.buffer_id);
         assert!(matches!(st, ZlStatus::NotFound));
 
+        let st = zl_client_close(client);
+        assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_send_control_encodes_cbor_envelope() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("local").expect("valid cstring");
+        let topic = CString::new("_sys/control").expect("valid cstring");
+        let command = CString::new("reload").expect("valid cstring");
+        let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+        let st = zl_subscribe(client, topic.as_ptr(), Some(capture_callback), user_data);
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let payload = b"{\"k\":\"v\"}";
+        let st = zl_send_control(
+            client,
+            topic.as_ptr(),
+            command.as_ptr(),
+            payload.as_ptr() as *const c_void,
+            payload.len() as u32,
+        );
+        assert!(matches!(st, ZlStatus::Ok));
+
+        let got = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("callback should receive control payload");
+        let envelope: ControlEnvelope =
+            serde_cbor::from_slice(&got).expect("payload should be valid cbor");
+        assert_eq!(envelope.command, "reload");
+        assert_eq!(envelope.payload, payload);
+
+        let st = zl_unsubscribe(client, topic.as_ptr());
+        assert!(matches!(st, ZlStatus::Ok));
         let st = zl_client_close(client);
         assert!(matches!(st, ZlStatus::Ok));
     }
