@@ -43,6 +43,7 @@
 - `Event`（テキスト、bbox、推論結果）
 - `Control`（start/stop/reload/config）
 - F-07: スキーマ互換性判定用に `schema_id` を利用できること。
+- F-16: MVP の `Event` / `Control` payload シリアライズは CBOR を標準とすること。
 
 ## 5.3 実行・信頼性
 - F-08: producer/consumer は独立プロセスで接続できること。
@@ -90,6 +91,7 @@
 - C-02: OS は Linux/Windows を対象とし、公開API/ABI/protocol の同等性を維持する。
 - C-03: 共有メモリ容量の上限と eviction 方針を定義する。
 - C-04: 0.x 系では API/ABI 変更があり得るが、破壊的変更時は互換方針と移行手順を必ず文書化する。
+- C-05: topic 命名規約は `[a-z0-9_./-]` を許容し、予約プレフィックスは `_sys/` と `_dbg/` を使用する。
 
 ## 9. 受け入れ基準（MVP）
 - A-01: `ASR Node -> Connector -> Parser Node` が連続入力で動作する。
