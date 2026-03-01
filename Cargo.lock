@@ -19,6 +19,7 @@ name = "zl-ffi"
 version = "0.1.0"
 dependencies = [
  "zl-proto",
+ "zl-router",
 ]
 
 [[package]]

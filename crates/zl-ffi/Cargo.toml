@@ -9,3 +9,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 zl-proto = { path = "../zl-proto" }
+zl-router = { path = "../zl-router" }
