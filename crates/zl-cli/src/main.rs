@@ -1,3 +1,218 @@
+use core::ffi::{c_char, c_void};
+use serde::Deserialize;
+use std::env;
+use std::ffi::CString;
+use std::sync::mpsc;
+use std::time::Duration;
+use zl_ffi::{
+    zl_client_close, zl_client_open, zl_publish, zl_send_control, zl_subscribe, zl_unsubscribe,
+    ZlClient, ZlMsgHeader, ZlStatus,
+};
+
+#[derive(Debug, Deserialize)]
+struct ControlEnvelope {
+    command: String,
+    payload: Vec<u8>,
+}
+
+extern "C" fn payload_callback(
+    _topic: *const c_char,
+    header: *const ZlMsgHeader,
+    payload: *const c_void,
+    _buf_ref: *const zl_ffi::ZlBufferRef,
+    user_data: *mut c_void,
+) {
+    let tx = unsafe { &*(user_data as *const mpsc::Sender<Vec<u8>>) };
+    if payload.is_null() || header.is_null() {
+        let _ = tx.send(Vec::new());
+        return;
+    }
+
+    let len = unsafe { (*header).size as usize };
+    let bytes = unsafe { std::slice::from_raw_parts(payload as *const u8, len) };
+    let _ = tx.send(bytes.to_vec());
+}
+
+fn usage() {
+    println!("zl-cli commands:");
+    println!("  smoke-pubsub [topic] [message]");
+    println!("  smoke-control [topic] [command] [payload]");
+}
+
+fn open_client(endpoint: &CString) -> Result<*mut ZlClient, ZlStatus> {
+    let mut client: *mut ZlClient = std::ptr::null_mut();
+    let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+    if matches!(st, ZlStatus::Ok) {
+        Ok(client)
+    } else {
+        Err(st)
+    }
+}
+
+fn smoke_pubsub(topic: &str, message: &str) -> i32 {
+    let endpoint = CString::new("local").expect("fixed endpoint literal");
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("invalid topic");
+            return 2;
+        }
+    };
+
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("zl_client_open failed");
+            return 1;
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data);
+    if !matches!(st, ZlStatus::Ok) {
+        eprintln!("zl_subscribe failed");
+        let _ = zl_client_close(client);
+        return 1;
+    }
+
+    let bytes = message.as_bytes();
+    let header = ZlMsgHeader {
+        msg_type: 2,
+        timestamp_ns: 0,
+        size: bytes.len() as u32,
+        schema_id: 1,
+        trace_id: 1,
+    };
+    let st = zl_publish(
+        client,
+        topic_c.as_ptr(),
+        &header as *const ZlMsgHeader,
+        bytes.as_ptr() as *const c_void,
+        bytes.len() as u32,
+        std::ptr::null(),
+    );
+    if !matches!(st, ZlStatus::Ok) {
+        eprintln!("zl_publish failed");
+        let _ = zl_unsubscribe(client, topic_c.as_ptr());
+        let _ = zl_client_close(client);
+        return 1;
+    }
+
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(got) => println!("received: {}", String::from_utf8_lossy(&got)),
+        Err(_) => {
+            eprintln!("timeout waiting callback");
+            let _ = zl_unsubscribe(client, topic_c.as_ptr());
+            let _ = zl_client_close(client);
+            return 1;
+        }
+    }
+
+    let _ = zl_unsubscribe(client, topic_c.as_ptr());
+    let _ = zl_client_close(client);
+    0
+}
+
+fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
+    let endpoint = CString::new("local").expect("fixed endpoint literal");
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("invalid topic");
+            return 2;
+        }
+    };
+    let command_c = match CString::new(command) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("invalid command");
+            return 2;
+        }
+    };
+
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("zl_client_open failed");
+            return 1;
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data);
+    if !matches!(st, ZlStatus::Ok) {
+        eprintln!("zl_subscribe failed");
+        let _ = zl_client_close(client);
+        return 1;
+    }
+
+    let payload_bytes = payload.as_bytes();
+    let st = zl_send_control(
+        client,
+        topic_c.as_ptr(),
+        command_c.as_ptr(),
+        payload_bytes.as_ptr() as *const c_void,
+        payload_bytes.len() as u32,
+    );
+    if !matches!(st, ZlStatus::Ok) {
+        eprintln!("zl_send_control failed");
+        let _ = zl_unsubscribe(client, topic_c.as_ptr());
+        let _ = zl_client_close(client);
+        return 1;
+    }
+
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(got) => match serde_cbor::from_slice::<ControlEnvelope>(&got) {
+            Ok(decoded) => {
+                println!("control.command={}", decoded.command);
+                println!("control.payload={}", String::from_utf8_lossy(&decoded.payload));
+            }
+            Err(err) => {
+                eprintln!("cbor decode failed: {err}");
+                let _ = zl_unsubscribe(client, topic_c.as_ptr());
+                let _ = zl_client_close(client);
+                return 1;
+            }
+        },
+        Err(_) => {
+            eprintln!("timeout waiting callback");
+            let _ = zl_unsubscribe(client, topic_c.as_ptr());
+            let _ = zl_client_close(client);
+            return 1;
+        }
+    }
+
+    let _ = zl_unsubscribe(client, topic_c.as_ptr());
+    let _ = zl_client_close(client);
+    0
+}
+
 fn main() {
-    println!("zl-cli: MVP skeleton");
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        usage();
+        std::process::exit(2);
+    }
+
+    let code = match args[1].as_str() {
+        "smoke-pubsub" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let message = args.get(3).map_or("hello", String::as_str);
+            smoke_pubsub(topic, message)
+        }
+        "smoke-control" => {
+            let topic = args.get(2).map_or("_sys/control", String::as_str);
+            let command = args.get(3).map_or("reload", String::as_str);
+            let payload = args.get(4).map_or("{}", String::as_str);
+            smoke_control(topic, command, payload)
+        }
+        _ => {
+            usage();
+            2
+        }
+    };
+
+    std::process::exit(code);
 }
