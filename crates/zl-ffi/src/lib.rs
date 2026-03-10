@@ -569,43 +569,87 @@ pub unsafe extern "C" fn zl_subscribe(
         }
 
         if use_stream {
-            thread::spawn(move || loop {
-                if stop_rx.try_recv().is_ok() {
-                    break;
-                }
-                let mut resp = [0u8; 4096];
-                match session.recv_frame(&mut resp) {
-                    Ok(len) => {
-                        if let Ok(DaemonStreamFrame::Message { header, payload }) =
-                            serde_cbor::from_slice::<DaemonStreamFrame>(&resp[..len])
-                        {
-                            let header_ffi = ZlMsgHeader {
-                                msg_type: header.msg_type,
-                                timestamp_ns: header.timestamp_ns,
-                                size: header.size,
-                                schema_id: header.schema_id,
-                                trace_id: header.trace_id,
-                            };
-                            let header_ptr = &header_ffi as *const ZlMsgHeader;
-                            let payload_ptr = if payload.is_empty() {
-                                std::ptr::null()
-                            } else {
-                                payload.as_ptr() as *const c_void
-                            };
-                            callback(
-                                topic_c.as_ptr(),
-                                header_ptr,
-                                payload_ptr,
-                                std::ptr::null(),
-                                user_data_addr as *mut c_void,
-                            );
+            thread::spawn(move || {
+                let mut active_session = Some(session);
+                let mut reconnect_backoff_ms = 50u64;
+
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+
+                    if active_session.is_none() {
+                        let new_session = match ControlSession::connect(&endpoint) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                                reconnect_backoff_ms =
+                                    (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                                continue;
+                            }
+                        };
+                        let mut reopen_resp = [0u8; 512];
+                        let reopen_len = match new_session.request(&sub_req, &mut reopen_resp) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                                reconnect_backoff_ms =
+                                    (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                                continue;
+                            }
+                        };
+                        if daemon_response_ok(&reopen_resp[..reopen_len]).is_err() {
+                            thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                            reconnect_backoff_ms =
+                                (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                            continue;
                         }
+                        active_session = Some(new_session);
+                        reconnect_backoff_ms = 50;
                     }
-                    Err(IpcError::Disconnected) => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(20));
+
+                    let mut resp = [0u8; 4096];
+                    let recv_result = active_session
+                        .as_ref()
+                        .expect("session is set above")
+                        .recv_frame(&mut resp);
+                    match recv_result {
+                        Ok(len) => {
+                            if let Ok(DaemonStreamFrame::Message { header, payload }) =
+                                serde_cbor::from_slice::<DaemonStreamFrame>(&resp[..len])
+                            {
+                                let header_ffi = ZlMsgHeader {
+                                    msg_type: header.msg_type,
+                                    timestamp_ns: header.timestamp_ns,
+                                    size: header.size,
+                                    schema_id: header.schema_id,
+                                    trace_id: header.trace_id,
+                                };
+                                let header_ptr = &header_ffi as *const ZlMsgHeader;
+                                let payload_ptr = if payload.is_empty() {
+                                    std::ptr::null()
+                                } else {
+                                    payload.as_ptr() as *const c_void
+                                };
+                                callback(
+                                    topic_c.as_ptr(),
+                                    header_ptr,
+                                    payload_ptr,
+                                    std::ptr::null(),
+                                    user_data_addr as *mut c_void,
+                                );
+                            }
+                            reconnect_backoff_ms = 50;
+                        }
+                        Err(IpcError::Disconnected) => {
+                            active_session = None;
+                            thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                            reconnect_backoff_ms =
+                                (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(20));
+                        }
                     }
                 }
             })
