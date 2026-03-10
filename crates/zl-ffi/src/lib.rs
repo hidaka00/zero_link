@@ -340,6 +340,8 @@ fn daemon_subscribe_use_stream() -> bool {
 }
 
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
+const DAEMON_SUBSCRIBE_OPEN_RETRIES: u32 = 10;
+const DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS: u64 = 100;
 
 fn test_hooks_enabled() -> bool {
     cfg!(debug_assertions)
@@ -351,6 +353,22 @@ fn stream_reconnect_failures_before_pull_fallback() -> u32 {
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK)
+}
+
+fn daemon_subscribe_open_retries() -> u32 {
+    std::env::var("ZL_DAEMON_SUBSCRIBE_OPEN_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DAEMON_SUBSCRIBE_OPEN_RETRIES)
+}
+
+fn daemon_subscribe_open_backoff_ms() -> u64 {
+    std::env::var("ZL_DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS)
 }
 
 fn stream_test_force_connect_fail() -> bool {
@@ -403,6 +421,45 @@ fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
     } else {
         Err(ZlStatus::Internal)
     }
+}
+
+fn open_daemon_subscription_session(
+    endpoint: &str,
+    sub_req: &[u8],
+    sub_resp: &mut [u8],
+) -> Result<ControlSession, ZlStatus> {
+    let retries = daemon_subscribe_open_retries();
+    let backoff_ms = daemon_subscribe_open_backoff_ms();
+    let mut last_status = ZlStatus::IpcDisconnected;
+
+    for attempt in 0..retries {
+        let session = match ControlSession::connect(endpoint) {
+            Ok(v) => v,
+            Err(err) => {
+                last_status = from_ipc_error(err);
+                if attempt + 1 < retries {
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                    continue;
+                }
+                return Err(last_status);
+            }
+        };
+        let sub_len = match session.request(sub_req, sub_resp) {
+            Ok(v) => v,
+            Err(err) => {
+                last_status = from_ipc_error(err);
+                if attempt + 1 < retries {
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                    continue;
+                }
+                return Err(last_status);
+            }
+        };
+        daemon_response_ok(&sub_resp[..sub_len])?;
+        return Ok(session);
+    }
+
+    Err(last_status)
 }
 
 #[no_mangle]
@@ -608,17 +665,10 @@ pub unsafe extern "C" fn zl_subscribe(
             subscribe_request_body(&topic_str)
         };
         let mut sub_resp = [0u8; 512];
-        let session = match ControlSession::connect(&endpoint) {
+        let session = match open_daemon_subscription_session(&endpoint, &sub_req, &mut sub_resp) {
             Ok(v) => v,
-            Err(err) => return from_ipc_error(err),
+            Err(s) => return s,
         };
-        let sub_len = match session.request(&sub_req, &mut sub_resp) {
-            Ok(v) => v,
-            Err(err) => return from_ipc_error(err),
-        };
-        if let Err(s) = daemon_response_ok(&sub_resp[..sub_len]) {
-            return s;
-        }
 
         if use_stream {
             let poll_req = poll_request_body(&topic_str);
