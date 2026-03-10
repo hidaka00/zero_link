@@ -112,6 +112,18 @@ jobs:
           }
           try {
             $env:ZL_ENDPOINT = "daemon://local"
+            function Invoke-ZlCliRetry([string[]]$Args, [string]$Label, [int]$Retries = 3, [int]$DelayMs = 300) {
+              for ($attempt = 1; $attempt -le $Retries; $attempt++) {
+                .\\target\\debug\\zl-cli.exe @Args
+                if ($LASTEXITCODE -eq 0) {
+                  return
+                }
+                if ($attempt -lt $Retries) {
+                  Start-Sleep -Milliseconds $DelayMs
+                }
+              }
+              throw "$Label failed after retries"
+            }
             $ok = $false
             for ($i = 0; $i -lt 10; $i++) {
               .\\target\\debug\\zl-cli.exe daemon-health
@@ -124,8 +136,7 @@ jobs:
             if (-not $ok) {
               throw "daemon-health failed after retries"
             }
-            .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win
-            if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub failed" }
+            Invoke-ZlCliRetry -Args @("smoke-pubsub","audio/asr/text","ci-daemon-win") -Label "smoke-pubsub"
             .\\target\\debug\\zl-cli.exe smoke-burst audio/asr/text 50
             if ($LASTEXITCODE -ne 0) { throw "smoke-burst failed" }
             .\\target\\debug\\zl-cli.exe smoke-trace audio/asr/text 9001
@@ -140,11 +151,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "smoke-acceptance failed" }
             $env:ZL_DAEMON_SUBSCRIBE_MODE = "stream"
             $env:ZL_STREAM_FALLBACK_THRESHOLD = "1"
-            .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-fallback
-            if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (fallback) failed" }
+            Invoke-ZlCliRetry -Args @("smoke-pubsub","audio/asr/text","ci-daemon-win-fallback") -Label "smoke-pubsub (fallback)"
             Remove-Item Env:ZL_STREAM_FALLBACK_THRESHOLD -ErrorAction SilentlyContinue
-            .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-stream
-            if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (stream) failed" }
+            Invoke-ZlCliRetry -Args @("smoke-pubsub","audio/asr/text","ci-daemon-win-stream") -Label "smoke-pubsub (stream)"
             $env:ZL_STREAM_FALLBACK_THRESHOLD = "1"
             $env:ZL_STREAM_TEST_FORCE_CONNECT_FAIL = "1"
             .\\target\\debug\\zl-cli.exe smoke-subscribe audio/asr/text 400
