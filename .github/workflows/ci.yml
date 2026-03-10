@@ -80,7 +80,14 @@ jobs:
           cargo build -p connectord -p zl-cli
           $stdoutLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stdout.log"
           $stderrLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stderr.log"
+          $savedDisconnectFlag = $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE
+          $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE = "1"
           $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50") -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+          if ($null -eq $savedDisconnectFlag) {
+            Remove-Item Env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE -ErrorAction SilentlyContinue
+          } else {
+            $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE = $savedDisconnectFlag
+          }
           try {
             $env:ZL_ENDPOINT = "daemon://local"
             $ok = $false
@@ -100,6 +107,14 @@ jobs:
             $env:ZL_DAEMON_SUBSCRIBE_MODE = "stream"
             .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-stream
             if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (stream) failed" }
+            $env:ZL_STREAM_FALLBACK_THRESHOLD = "1"
+            .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-fallback
+            if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (fallback) failed" }
+            $healthOut = .\\target\\debug\\zl-cli.exe daemon-health | Out-String
+            if (-not ($healthOut -match 'stream_fallback_recv_count=1')) {
+              throw "stream_fallback_recv_count was not 1"
+            }
+            Remove-Item Env:ZL_STREAM_FALLBACK_THRESHOLD -ErrorAction SilentlyContinue
             Remove-Item Env:ZL_DAEMON_SUBSCRIBE_MODE -ErrorAction SilentlyContinue
             .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
             if ($LASTEXITCODE -ne 0) { throw "smoke-control failed" }

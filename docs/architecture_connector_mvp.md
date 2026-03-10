@@ -233,7 +233,8 @@ ABI 互換ポリシー:
   （`stream_fallback_connect_count` / `stream_fallback_reopen_count` / `stream_fallback_recv_count`）を追加済み。
 - CI (Linux) で stream 切断注入 (`ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1`) と
   `stream_fallback_recv_count` 検証を追加済み。
-- 残タスク: Windows 側でも切断注入を伴う理由別メトリクス検証を追加。
+- CI (Windows) でも切断注入と `stream_fallback_recv_count` 検証を追加済み。
+- 残タスク: connect/reopen の理由別カウンタを直接増やす統合シナリオを追加。
 
 ## 10. MVP 固定値（実装開始前に確定）
 
