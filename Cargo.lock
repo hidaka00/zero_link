@@ -106,6 +106,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_cbor",
+ "zl-ipc",
  "zl-proto",
  "zl-router",
 ]
