@@ -341,9 +341,23 @@ fn daemon_subscribe_use_stream() -> bool {
 
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 
-fn report_stream_fallback_metric(endpoint: &str) {
+fn report_stream_fallback_metric(endpoint: &str, reason: &str) {
+    let req = format!("metric:stream_fallback_to_pull:{reason}");
     let mut resp = [0u8; 256];
-    let _ = zl_ipc::control_request(endpoint, b"metric:stream_fallback_to_pull", &mut resp);
+    let _ = zl_ipc::control_request(endpoint, req.as_bytes(), &mut resp);
+}
+
+fn activate_pull_fallback(
+    endpoint: &str,
+    use_pull_fallback: &mut bool,
+    fallback_reported: &mut bool,
+    reason: &str,
+) {
+    *use_pull_fallback = true;
+    if !*fallback_reported {
+        report_stream_fallback_metric(endpoint, reason);
+        *fallback_reported = true;
+    }
 }
 
 fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
@@ -635,11 +649,12 @@ pub unsafe extern "C" fn zl_subscribe(
                                 if reconnect_failures
                                     >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                                 {
-                                    use_pull_fallback = true;
-                                    if !fallback_reported {
-                                        report_stream_fallback_metric(&endpoint);
-                                        fallback_reported = true;
-                                    }
+                                    activate_pull_fallback(
+                                        &endpoint,
+                                        &mut use_pull_fallback,
+                                        &mut fallback_reported,
+                                        "connect",
+                                    );
                                 }
                                 continue;
                             }
@@ -655,11 +670,12 @@ pub unsafe extern "C" fn zl_subscribe(
                                 if reconnect_failures
                                     >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                                 {
-                                    use_pull_fallback = true;
-                                    if !fallback_reported {
-                                        report_stream_fallback_metric(&endpoint);
-                                        fallback_reported = true;
-                                    }
+                                    activate_pull_fallback(
+                                        &endpoint,
+                                        &mut use_pull_fallback,
+                                        &mut fallback_reported,
+                                        "reopen",
+                                    );
                                 }
                                 continue;
                             }
@@ -671,11 +687,12 @@ pub unsafe extern "C" fn zl_subscribe(
                             reconnect_failures = reconnect_failures.saturating_add(1);
                             if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                             {
-                                use_pull_fallback = true;
-                                if !fallback_reported {
-                                    report_stream_fallback_metric(&endpoint);
-                                    fallback_reported = true;
-                                }
+                                activate_pull_fallback(
+                                    &endpoint,
+                                    &mut use_pull_fallback,
+                                    &mut fallback_reported,
+                                    "reopen",
+                                );
                             }
                             continue;
                         }
@@ -725,11 +742,12 @@ pub unsafe extern "C" fn zl_subscribe(
                             reconnect_failures = reconnect_failures.saturating_add(1);
                             if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                             {
-                                use_pull_fallback = true;
-                                if !fallback_reported {
-                                    report_stream_fallback_metric(&endpoint);
-                                    fallback_reported = true;
-                                }
+                                activate_pull_fallback(
+                                    &endpoint,
+                                    &mut use_pull_fallback,
+                                    &mut fallback_reported,
+                                    "recv",
+                                );
                             }
                         }
                         Err(_) => {

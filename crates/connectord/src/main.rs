@@ -68,6 +68,9 @@ struct DaemonState {
     dropped_messages: u64,
     queue_limit: usize,
     stream_fallback_to_pull_count: u64,
+    stream_fallback_connect_count: u64,
+    stream_fallback_reopen_count: u64,
+    stream_fallback_recv_count: u64,
 }
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
@@ -179,8 +182,13 @@ fn pop_topic_message(state: &mut DaemonState, topic: &str) -> Option<PublishMirr
 
 fn health_response(state: &DaemonState) -> Vec<u8> {
     format!(
-        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{},\"stream_fallback_to_pull_count\":{}}}",
-        state.queue_limit, state.dropped_messages, state.stream_fallback_to_pull_count
+        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{},\"stream_fallback_to_pull_count\":{},\"stream_fallback_connect_count\":{},\"stream_fallback_reopen_count\":{},\"stream_fallback_recv_count\":{}}}",
+        state.queue_limit,
+        state.dropped_messages,
+        state.stream_fallback_to_pull_count,
+        state.stream_fallback_connect_count,
+        state.stream_fallback_reopen_count,
+        state.stream_fallback_recv_count
     )
     .into_bytes()
 }
@@ -232,6 +240,26 @@ fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
     if payload == b"metric:stream_fallback_to_pull" {
         state.stream_fallback_to_pull_count = state.stream_fallback_to_pull_count.saturating_add(1);
         return b"{\"status\":\"ok\",\"service\":\"connectord\",\"metric\":\"stream_fallback_to_pull\"}"
+            .to_vec();
+    }
+    if let Some(reason) = payload.strip_prefix(b"metric:stream_fallback_to_pull:") {
+        state.stream_fallback_to_pull_count = state.stream_fallback_to_pull_count.saturating_add(1);
+        match reason {
+            b"connect" => {
+                state.stream_fallback_connect_count =
+                    state.stream_fallback_connect_count.saturating_add(1);
+            }
+            b"reopen" => {
+                state.stream_fallback_reopen_count =
+                    state.stream_fallback_reopen_count.saturating_add(1);
+            }
+            b"recv" => {
+                state.stream_fallback_recv_count =
+                    state.stream_fallback_recv_count.saturating_add(1);
+            }
+            _ => {}
+        }
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"metric\":\"stream_fallback_to_pull_reason\"}"
             .to_vec();
     }
     if payload.starts_with(b"publish:") {
@@ -296,6 +324,9 @@ fn start_daemon_control_server(
                 dropped_messages: 0,
                 queue_limit,
                 stream_fallback_to_pull_count: 0,
+                stream_fallback_connect_count: 0,
+                stream_fallback_reopen_count: 0,
+                stream_fallback_recv_count: 0,
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -469,6 +500,9 @@ fn start_daemon_control_server(
                 dropped_messages: 0,
                 queue_limit,
                 stream_fallback_to_pull_count: 0,
+                stream_fallback_connect_count: 0,
+                stream_fallback_reopen_count: 0,
+                stream_fallback_recv_count: 0,
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -745,6 +779,9 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let got = control_response(b"health", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -758,6 +795,9 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let got = control_response(b"control:\x01\x02", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -771,6 +811,9 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let got = control_response(b"publish:\x01\x02\x03", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -784,6 +827,9 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let sub = control_response(b"subscribe:audio/asr/text", &mut state);
         let sub_text = String::from_utf8(sub).expect("valid utf8");
@@ -824,6 +870,9 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let topic = "audio/asr/text";
         let _ = control_response(format!("subscribe:{topic}").as_bytes(), &mut state);
@@ -863,12 +912,18 @@ mod tests {
             dropped_messages: 7,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let text = String::from_utf8(control_response(b"health", &mut state))
             .expect("health should be utf8");
         assert!(text.contains("\"dropped_messages\":7"));
         assert!(text.contains("\"queue_limit\":100"));
         assert!(text.contains("\"stream_fallback_to_pull_count\":0"));
+        assert!(text.contains("\"stream_fallback_connect_count\":0"));
+        assert!(text.contains("\"stream_fallback_reopen_count\":0"));
+        assert!(text.contains("\"stream_fallback_recv_count\":0"));
     }
 
     #[test]
@@ -878,10 +933,31 @@ mod tests {
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
             stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
         };
         let got = control_response(b"metric:stream_fallback_to_pull", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"status\":\"ok\""));
         assert_eq!(state.stream_fallback_to_pull_count, 1);
+    }
+
+    #[test]
+    fn metric_stream_fallback_reason_increments_reason_counter() {
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
+        };
+        let _ = control_response(b"metric:stream_fallback_to_pull:reopen", &mut state);
+        assert_eq!(state.stream_fallback_to_pull_count, 1);
+        assert_eq!(state.stream_fallback_connect_count, 0);
+        assert_eq!(state.stream_fallback_reopen_count, 1);
+        assert_eq!(state.stream_fallback_recv_count, 0);
     }
 }

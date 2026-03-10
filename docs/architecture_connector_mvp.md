@@ -201,9 +201,9 @@ ABI 互換ポリシー:
 - M5: A-01〜A-05 の統合テスト通過
 
 ### 9.1 subscribe 通信モデルの段階方針
-- 現在: daemon 経由 subscribe は pull 型（`subscribe` / `poll` / `unsubscribe`）を採用。
-- 理由: 既存の request/response 制御面を再利用でき、Linux/Windows の同時実装コストを抑えられるため。
-- 残タスク: stream 型 subscribe transport（server push）を実装し、pull 型と一時併存可能にする。
+- 現在: daemon 経由 subscribe は pull/stream 併存。
+- 既定: pull 型（`subscribe` / `poll` / `unsubscribe`）。`ZL_DAEMON_SUBSCRIBE_MODE=stream` で stream 型を有効化。
+- 方針: stream を優先実装しつつ、障害時は pull へフォールバックして可用性を優先する。
 - stream 型の完了条件:
   - daemon からの push 受信で callback 配信できる
   - 切断時の再接続と再購読復元が動作する
@@ -229,8 +229,9 @@ ABI 互換ポリシー:
 - 既定は pull 型のまま。`ZL_DAEMON_SUBSCRIBE_MODE=stream` を設定した場合のみ stream 型を有効化。
 - stream 接続断時の再接続と `stream-open` 再送（再購読復元）は実装済み。
 - stream 障害時の pull への自動フォールバック（再接続失敗しきい値到達時）は実装済み。
-- `connectord` health に `stream_fallback_to_pull_count` を追加済み（件数のみ）。
-- 残タスク: フォールバック原因分類（connect/reopen/recv）を分離して可視化。
+- `connectord` health に `stream_fallback_to_pull_count` と理由別カウンタ
+  （`stream_fallback_connect_count` / `stream_fallback_reopen_count` / `stream_fallback_recv_count`）を追加済み。
+- 残タスク: CI で意図的な切断を注入し、理由別カウンタが期待通り増える統合試験を追加。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

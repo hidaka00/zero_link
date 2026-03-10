@@ -23,6 +23,9 @@ struct DaemonHealthResponse {
     queue_limit: Option<u64>,
     dropped_messages: Option<u64>,
     stream_fallback_to_pull_count: Option<u64>,
+    stream_fallback_connect_count: Option<u64>,
+    stream_fallback_reopen_count: Option<u64>,
+    stream_fallback_recv_count: Option<u64>,
 }
 
 extern "C" fn payload_callback(
@@ -236,6 +239,15 @@ fn daemon_health() -> i32 {
             }
             if let Some(count) = v.stream_fallback_to_pull_count {
                 println!("stream_fallback_to_pull_count={count}");
+            }
+            if let Some(count) = v.stream_fallback_connect_count {
+                println!("stream_fallback_connect_count={count}");
+            }
+            if let Some(count) = v.stream_fallback_reopen_count {
+                println!("stream_fallback_reopen_count={count}");
+            }
+            if let Some(count) = v.stream_fallback_recv_count {
+                println!("stream_fallback_recv_count={count}");
             }
         }
         Err(_) => {
