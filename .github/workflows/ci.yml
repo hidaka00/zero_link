@@ -52,6 +52,8 @@ jobs:
           set -euo pipefail
           export ZL_SMOKE_TIMEOUT_MS=5000
           export ZL_SMOKE_SUBSCRIBE_SETTLE_MS=150
+          export ZL_SMOKE_ACCEPTANCE_STEP_RETRIES=3
+          export ZL_SMOKE_ACCEPTANCE_RETRY_BACKOFF_MS=250
           cargo build -p connectord -p zl-cli
           LOG_PATH="/tmp/connectord-daemon.log"
           ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1 target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
@@ -99,6 +101,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:ZL_SMOKE_TIMEOUT_MS = "5000"
           $env:ZL_SMOKE_SUBSCRIBE_SETTLE_MS = "150"
+          $env:ZL_SMOKE_ACCEPTANCE_STEP_RETRIES = "3"
+          $env:ZL_SMOKE_ACCEPTANCE_RETRY_BACKOFF_MS = "250"
           $env:ZL_DAEMON_REQUEST_RETRIES = "10"
           $env:ZL_DAEMON_REQUEST_BACKOFF_MS = "80"
           $env:ZL_DAEMON_SUBSCRIBE_OPEN_RETRIES = "15"

@@ -600,33 +600,72 @@ fn smoke_acceptance(topic: &str, rounds: usize, burst_count: usize) -> i32 {
         eprintln!("rounds and burst_count must be > 0");
         return 2;
     }
+    let step_retries = env::var("ZL_SMOKE_ACCEPTANCE_STEP_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(2);
+    let retry_backoff_ms = env::var("ZL_SMOKE_ACCEPTANCE_RETRY_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(200);
+
     for i in 0..rounds {
-        if smoke_burst(topic, burst_count) != 0 {
+        if run_acceptance_step("burst", step_retries, retry_backoff_ms, || {
+            smoke_burst(topic, burst_count)
+        }) != 0
+        {
             eprintln!("acceptance failed: burst round={i}");
             return 1;
         }
         let trace = 10_000_u64 + i as u64;
-        if smoke_trace(topic, trace) != 0 {
+        if run_acceptance_step("trace", step_retries, retry_backoff_ms, || {
+            smoke_trace(topic, trace)
+        }) != 0
+        {
             eprintln!("acceptance failed: trace round={i}");
             return 1;
         }
         let iso_msg = format!("iso-{i}");
-        if smoke_isolation(topic, &iso_msg) != 0 {
+        if run_acceptance_step("isolation", step_retries, retry_backoff_ms, || {
+            smoke_isolation(topic, &iso_msg)
+        }) != 0
+        {
             eprintln!("acceptance failed: isolation round={i}");
             return 1;
         }
         let buf_msg = format!("buffer-{i}");
-        if smoke_buffer_ref(topic, &buf_msg) != 0 {
+        if run_acceptance_step("buffer-ref", step_retries, retry_backoff_ms, || {
+            smoke_buffer_ref(topic, &buf_msg)
+        }) != 0
+        {
             eprintln!("acceptance failed: buffer_ref round={i}");
             return 1;
         }
     }
-    if smoke_metrics() != 0 {
+    if run_acceptance_step("metrics", step_retries, retry_backoff_ms, smoke_metrics) != 0 {
         eprintln!("acceptance failed: metrics");
         return 1;
     }
     println!("acceptance_ok=true rounds={rounds} burst_count={burst_count}");
     0
+}
+
+fn run_acceptance_step<F>(label: &str, retries: u32, backoff_ms: u64, mut step: F) -> i32
+where
+    F: FnMut() -> i32,
+{
+    for attempt in 1..=retries {
+        if step() == 0 {
+            return 0;
+        }
+        eprintln!("[acceptance] {label} attempt {attempt}/{retries} failed");
+        if attempt < retries {
+            std::thread::sleep(Duration::from_millis(backoff_ms));
+        }
+    }
+    1
 }
 
 fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
