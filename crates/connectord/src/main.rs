@@ -52,7 +52,10 @@ enum DaemonPollResponse {
 #[derive(Default)]
 struct DaemonState {
     queues: HashMap<String, VecDeque<PublishMirrorEnvelope>>,
+    dropped_messages: u64,
 }
+
+const TOPIC_QUEUE_LIMIT: usize = 100;
 
 fn usage() {
     println!("connectord commands:");
@@ -117,13 +120,29 @@ fn topic_from_prefixed<'a>(payload: &'a [u8], prefix: &[u8]) -> Option<&'a str> 
     Some(topic)
 }
 
+fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
+    let queue = state.queues.entry(msg.topic.clone()).or_default();
+    if queue.len() >= TOPIC_QUEUE_LIMIT {
+        let _ = queue.pop_front();
+        state.dropped_messages = state.dropped_messages.saturating_add(1);
+    }
+    queue.push_back(msg);
+}
+
+fn health_response(state: &DaemonState) -> Vec<u8> {
+    format!(
+        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{TOPIC_QUEUE_LIMIT},\"dropped_messages\":{}}}",
+        state.dropped_messages
+    )
+    .into_bytes()
+}
+
 fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
     if payload == b"connectord:control-ping" {
         return b"connectord:control-ping".to_vec();
     }
     if payload == b"health" {
-        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\"}"
-            .to_vec();
+        return health_response(state);
     }
     if let Some(topic) = topic_from_prefixed(payload, b"subscribe:") {
         state.queues.entry(topic.to_string()).or_default();
@@ -156,11 +175,7 @@ fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
     if payload.starts_with(b"publish:") {
         let body = &payload["publish:".len()..];
         if let Ok(msg) = serde_cbor::from_slice::<PublishMirrorEnvelope>(body) {
-            state
-                .queues
-                .entry(msg.topic.clone())
-                .or_default()
-                .push_back(msg);
+            enqueue_publish(state, msg);
         }
         let body_len = body.len();
         return format!(
@@ -578,5 +593,51 @@ mod tests {
         let unsub = control_response(b"unsubscribe:audio/asr/text", &mut state);
         let unsub_text = String::from_utf8(unsub).expect("valid utf8");
         assert!(unsub_text.contains("\"unsubscribed\":true"));
+    }
+
+    #[test]
+    fn queue_limit_drops_oldest() {
+        let mut state = DaemonState::default();
+        let topic = "audio/asr/text";
+        let _ = control_response(format!("subscribe:{topic}").as_bytes(), &mut state);
+
+        for i in 0..(TOPIC_QUEUE_LIMIT + 2) {
+            let msg = PublishMirrorEnvelope {
+                topic: topic.to_string(),
+                header: PublishMirrorHeader {
+                    msg_type: 2,
+                    timestamp_ns: i as u64,
+                    size: 1,
+                    schema_id: 1,
+                    trace_id: i as u64,
+                },
+                payload: vec![i as u8],
+            };
+            let mut req = b"publish:".to_vec();
+            req.extend(serde_cbor::to_vec(&msg).expect("cbor encode"));
+            let _ = control_response(&req, &mut state);
+        }
+
+        assert_eq!(state.dropped_messages, 2);
+
+        let poll = control_response(format!("poll:{topic}").as_bytes(), &mut state);
+        let decoded: DaemonPollResponse =
+            serde_cbor::from_slice(&poll).expect("poll should decode");
+        match decoded {
+            DaemonPollResponse::Message { payload, .. } => assert_eq!(payload, vec![2u8]),
+            DaemonPollResponse::Empty => panic!("expected message"),
+        }
+    }
+
+    #[test]
+    fn health_response_contains_drop_stats() {
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 7,
+        };
+        let text = String::from_utf8(control_response(b"health", &mut state))
+            .expect("health should be utf8");
+        assert!(text.contains("\"dropped_messages\":7"));
+        assert!(text.contains("\"queue_limit\":100"));
     }
 }
