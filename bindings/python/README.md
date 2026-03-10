@@ -7,6 +7,7 @@ Minimal Python wrapper over the ZeroLink C ABI.
 - open/close client
 - publish event payload
 - subscribe/unsubscribe with Python callback
+- status-specific exceptions (`ZlInvalidArgError`, `ZlIpcDisconnectedError`, etc.)
 
 ## Quick start
 

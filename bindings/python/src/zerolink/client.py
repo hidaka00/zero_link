@@ -21,9 +21,51 @@ class ZlStatus(IntEnum):
 
 class ZlError(RuntimeError):
     def __init__(self, code: int, op: str) -> None:
-        super().__init__(f"{op} failed: {ZlStatus(code).name if code in ZlStatus._value2member_map_ else code}")
+        super().__init__(
+            f"{op} failed: "
+            f"{ZlStatus(code).name if code in ZlStatus._value2member_map_ else code}"
+        )
         self.code = code
         self.op = op
+
+
+class ZlInvalidArgError(ZlError):
+    pass
+
+
+class ZlTimeoutError(ZlError):
+    pass
+
+
+class ZlNotFoundError(ZlError):
+    pass
+
+
+class ZlBufferFullError(ZlError):
+    pass
+
+
+class ZlShmExhaustedError(ZlError):
+    pass
+
+
+class ZlIpcDisconnectedError(ZlError):
+    pass
+
+
+class ZlInternalError(ZlError):
+    pass
+
+
+_STATUS_ERROR_MAP = {
+    ZlStatus.INVALID_ARG: ZlInvalidArgError,
+    ZlStatus.TIMEOUT: ZlTimeoutError,
+    ZlStatus.NOT_FOUND: ZlNotFoundError,
+    ZlStatus.BUFFER_FULL: ZlBufferFullError,
+    ZlStatus.SHM_EXHAUSTED: ZlShmExhaustedError,
+    ZlStatus.IPC_DISCONNECTED: ZlIpcDisconnectedError,
+    ZlStatus.INTERNAL: ZlInternalError,
+}
 
 
 class _ZlClient(ctypes.Structure):
@@ -161,7 +203,12 @@ class Client:
     @staticmethod
     def _check(status: int, op: str) -> None:
         if status != ZlStatus.OK:
-            raise ZlError(status, op)
+            try:
+                status_enum = ZlStatus(status)
+            except ValueError:
+                raise ZlError(status, op)
+            error_type = _STATUS_ERROR_MAP.get(status_enum, ZlError)
+            raise error_type(int(status_enum), op)
 
     def __enter__(self) -> "Client":
         return self

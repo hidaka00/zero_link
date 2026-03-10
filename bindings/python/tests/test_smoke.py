@@ -2,7 +2,18 @@ import time
 import unittest
 import os
 
-from zerolink import Client
+from zerolink import (
+    Client,
+    ZlBufferFullError,
+    ZlError,
+    ZlInternalError,
+    ZlInvalidArgError,
+    ZlIpcDisconnectedError,
+    ZlNotFoundError,
+    ZlShmExhaustedError,
+    ZlStatus,
+    ZlTimeoutError,
+)
 
 
 class SmokeTest(unittest.TestCase):
@@ -41,6 +52,26 @@ class SmokeTest(unittest.TestCase):
             client.unsubscribe("audio/asr/text")
 
         self.assertEqual(received, [b"py-daemon-smoke"])
+
+
+class ErrorMappingTest(unittest.TestCase):
+    def test_status_to_exception_mapping(self) -> None:
+        cases = [
+            (ZlStatus.INVALID_ARG, ZlInvalidArgError),
+            (ZlStatus.TIMEOUT, ZlTimeoutError),
+            (ZlStatus.NOT_FOUND, ZlNotFoundError),
+            (ZlStatus.BUFFER_FULL, ZlBufferFullError),
+            (ZlStatus.SHM_EXHAUSTED, ZlShmExhaustedError),
+            (ZlStatus.IPC_DISCONNECTED, ZlIpcDisconnectedError),
+            (ZlStatus.INTERNAL, ZlInternalError),
+        ]
+        for status, error_type in cases:
+            with self.assertRaises(error_type):
+                Client._check(int(status), "unit-test")
+
+    def test_unknown_status_falls_back_to_base_error(self) -> None:
+        with self.assertRaises(ZlError):
+            Client._check(999, "unit-test")
 
 
 if __name__ == "__main__":
