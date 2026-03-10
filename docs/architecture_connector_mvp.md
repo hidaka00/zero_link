@@ -229,7 +229,8 @@ ABI 互換ポリシー:
 - 既定は pull 型のまま。`ZL_DAEMON_SUBSCRIBE_MODE=stream` を設定した場合のみ stream 型を有効化。
 - stream 接続断時の再接続と `stream-open` 再送（再購読復元）は実装済み。
 - stream 障害時の pull への自動フォールバック（再接続失敗しきい値到達時）は実装済み。
-- 残タスク: stream / pull フォールバック遷移時のメトリクス可視化（カウント・原因分類）。
+- `connectord` health に `stream_fallback_to_pull_count` を追加済み（件数のみ）。
+- 残タスク: フォールバック原因分類（connect/reopen/recv）を分離して可視化。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

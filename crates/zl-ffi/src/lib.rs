@@ -341,6 +341,11 @@ fn daemon_subscribe_use_stream() -> bool {
 
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 
+fn report_stream_fallback_metric(endpoint: &str) {
+    let mut resp = [0u8; 256];
+    let _ = zl_ipc::control_request(endpoint, b"metric:stream_fallback_to_pull", &mut resp);
+}
+
 fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
     let parsed: Value = serde_json::from_slice(resp).map_err(|_| ZlStatus::Internal)?;
     let status = parsed
@@ -577,6 +582,7 @@ pub unsafe extern "C" fn zl_subscribe(
                 let mut reconnect_backoff_ms = 50u64;
                 let mut reconnect_failures = 0u32;
                 let mut use_pull_fallback = false;
+                let mut fallback_reported = false;
 
                 loop {
                     if stop_rx.try_recv().is_ok() {
@@ -630,6 +636,10 @@ pub unsafe extern "C" fn zl_subscribe(
                                     >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                                 {
                                     use_pull_fallback = true;
+                                    if !fallback_reported {
+                                        report_stream_fallback_metric(&endpoint);
+                                        fallback_reported = true;
+                                    }
                                 }
                                 continue;
                             }
@@ -646,6 +656,10 @@ pub unsafe extern "C" fn zl_subscribe(
                                     >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                                 {
                                     use_pull_fallback = true;
+                                    if !fallback_reported {
+                                        report_stream_fallback_metric(&endpoint);
+                                        fallback_reported = true;
+                                    }
                                 }
                                 continue;
                             }
@@ -658,6 +672,10 @@ pub unsafe extern "C" fn zl_subscribe(
                             if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                             {
                                 use_pull_fallback = true;
+                                if !fallback_reported {
+                                    report_stream_fallback_metric(&endpoint);
+                                    fallback_reported = true;
+                                }
                             }
                             continue;
                         }
@@ -708,6 +726,10 @@ pub unsafe extern "C" fn zl_subscribe(
                             if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
                             {
                                 use_pull_fallback = true;
+                                if !fallback_reported {
+                                    report_stream_fallback_metric(&endpoint);
+                                    fallback_reported = true;
+                                }
                             }
                         }
                         Err(_) => {

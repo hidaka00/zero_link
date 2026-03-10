@@ -67,6 +67,7 @@ struct DaemonState {
     queues: HashMap<String, VecDeque<PublishMirrorEnvelope>>,
     dropped_messages: u64,
     queue_limit: usize,
+    stream_fallback_to_pull_count: u64,
 }
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
@@ -178,8 +179,8 @@ fn pop_topic_message(state: &mut DaemonState, topic: &str) -> Option<PublishMirr
 
 fn health_response(state: &DaemonState) -> Vec<u8> {
     format!(
-        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{}}}",
-        state.queue_limit, state.dropped_messages
+        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{},\"stream_fallback_to_pull_count\":{}}}",
+        state.queue_limit, state.dropped_messages, state.stream_fallback_to_pull_count
     )
     .into_bytes()
 }
@@ -227,6 +228,11 @@ fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
             "{{\"status\":\"ok\",\"service\":\"connectord\",\"accepted_control_bytes\":{body_len}}}"
         )
         .into_bytes();
+    }
+    if payload == b"metric:stream_fallback_to_pull" {
+        state.stream_fallback_to_pull_count = state.stream_fallback_to_pull_count.saturating_add(1);
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"metric\":\"stream_fallback_to_pull\"}"
+            .to_vec();
     }
     if payload.starts_with(b"publish:") {
         let body = &payload["publish:".len()..];
@@ -289,6 +295,7 @@ fn start_daemon_control_server(
                 queues: HashMap::new(),
                 dropped_messages: 0,
                 queue_limit,
+                stream_fallback_to_pull_count: 0,
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -461,6 +468,7 @@ fn start_daemon_control_server(
                 queues: HashMap::new(),
                 dropped_messages: 0,
                 queue_limit,
+                stream_fallback_to_pull_count: 0,
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -736,6 +744,7 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let got = control_response(b"health", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -748,6 +757,7 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let got = control_response(b"control:\x01\x02", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -760,6 +770,7 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let got = control_response(b"publish:\x01\x02\x03", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -772,6 +783,7 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let sub = control_response(b"subscribe:audio/asr/text", &mut state);
         let sub_text = String::from_utf8(sub).expect("valid utf8");
@@ -811,6 +823,7 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 0,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let topic = "audio/asr/text";
         let _ = control_response(format!("subscribe:{topic}").as_bytes(), &mut state);
@@ -849,10 +862,26 @@ mod tests {
             queues: HashMap::new(),
             dropped_messages: 7,
             queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
         };
         let text = String::from_utf8(control_response(b"health", &mut state))
             .expect("health should be utf8");
         assert!(text.contains("\"dropped_messages\":7"));
         assert!(text.contains("\"queue_limit\":100"));
+        assert!(text.contains("\"stream_fallback_to_pull_count\":0"));
+    }
+
+    #[test]
+    fn metric_stream_fallback_increments_counter() {
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
+        };
+        let got = control_response(b"metric:stream_fallback_to_pull", &mut state);
+        let text = String::from_utf8(got).expect("valid utf8");
+        assert!(text.contains("\"status\":\"ok\""));
+        assert_eq!(state.stream_fallback_to_pull_count, 1);
     }
 }

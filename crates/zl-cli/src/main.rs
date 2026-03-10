@@ -22,6 +22,7 @@ struct DaemonHealthResponse {
     mode: String,
     queue_limit: Option<u64>,
     dropped_messages: Option<u64>,
+    stream_fallback_to_pull_count: Option<u64>,
 }
 
 extern "C" fn payload_callback(
@@ -232,6 +233,9 @@ fn daemon_health() -> i32 {
             }
             if let Some(dropped) = v.dropped_messages {
                 println!("dropped_messages={dropped}");
+            }
+            if let Some(count) = v.stream_fallback_to_pull_count {
+                println!("stream_fallback_to_pull_count={count}");
             }
         }
         Err(_) => {
