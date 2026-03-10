@@ -1,10 +1,25 @@
 use std::env;
+#[cfg(windows)]
+use std::ffi::c_void;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
+    PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+};
 use zl_ipc::{connect_control_channel, daemon_transport_target};
 
 fn usage() {
@@ -81,12 +96,18 @@ fn control_response(payload: &[u8]) -> Vec<u8> {
 
 struct DaemonControlServer {
     stop_tx: mpsc::Sender<()>,
+    wake_endpoint: Option<String>,
     join: JoinHandle<()>,
 }
 
 impl DaemonControlServer {
     fn stop(self) {
         let _ = self.stop_tx.send(());
+        if let Some(endpoint) = self.wake_endpoint {
+            if let Ok(channel) = connect_control_channel(&endpoint) {
+                let _ = channel.send(b"connectord:stop");
+            }
+        }
         let _ = self.join.join();
     }
 }
@@ -151,10 +172,148 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
             let _ = fs::remove_file(path_owned);
         });
 
-        Ok(Some(DaemonControlServer { stop_tx, join }))
+        Ok(Some(DaemonControlServer {
+            stop_tx,
+            wake_endpoint: Some(endpoint.to_string()),
+            join,
+        }))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::iter;
+        use std::os::windows::ffi::OsStrExt;
+
+        fn win_read_exact(handle: isize, mut buf: &mut [u8]) -> bool {
+            while !buf.is_empty() {
+                let mut read = 0u32;
+                let ok = unsafe {
+                    ReadFile(
+                        handle,
+                        buf.as_mut_ptr() as *mut c_void,
+                        u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                        &mut read as *mut u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok == 0 || read == 0 {
+                    return false;
+                }
+                let step = read as usize;
+                if step > buf.len() {
+                    return false;
+                }
+                let (_, rest) = buf.split_at_mut(step);
+                buf = rest;
+            }
+            true
+        }
+
+        fn win_write_all(handle: isize, mut buf: &[u8]) -> bool {
+            while !buf.is_empty() {
+                let mut written = 0u32;
+                let ok = unsafe {
+                    WriteFile(
+                        handle,
+                        buf.as_ptr() as *const c_void,
+                        u32::try_from(buf.len()).unwrap_or(u32::MAX),
+                        &mut written as *mut u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok == 0 || written == 0 {
+                    return false;
+                }
+                let step = written as usize;
+                if step > buf.len() {
+                    return false;
+                }
+                buf = &buf[step..];
+            }
+            true
+        }
+
+        let pipe_name = daemon_transport_target(endpoint)
+            .map_err(|e| format!("invalid daemon endpoint {endpoint}: {e:?}"))?;
+        let mut wide: Vec<u16> = std::ffi::OsStr::new(pipe_name)
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let endpoint_owned = endpoint.to_string();
+        let join = thread::spawn(move || loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    wide.as_mut_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    1,
+                    65536,
+                    65536,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+
+            let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+            if connected == 0 {
+                let err = unsafe { GetLastError() };
+                if err != ERROR_PIPE_CONNECTED {
+                    unsafe {
+                        CloseHandle(handle);
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            }
+
+            loop {
+                let mut len_buf = [0u8; 4];
+                if !win_read_exact(handle, &mut len_buf) {
+                    break;
+                }
+                let len = u32::from_le_bytes(len_buf) as usize;
+                let mut payload = vec![0u8; len];
+                if !win_read_exact(handle, &mut payload) {
+                    break;
+                }
+                let response = control_response(&payload);
+                let resp_len = match u32::try_from(response.len()) {
+                    Ok(v) => v.to_le_bytes(),
+                    Err(_) => break,
+                };
+                if !win_write_all(handle, &resp_len) {
+                    break;
+                }
+                if !win_write_all(handle, &response) {
+                    break;
+                }
+                unsafe {
+                    FlushFileBuffers(handle);
+                }
+            }
+
+            unsafe {
+                DisconnectNamedPipe(handle);
+                CloseHandle(handle);
+            }
+        });
+
+        Ok(Some(DaemonControlServer {
+            stop_tx,
+            wake_endpoint: Some(endpoint_owned),
+            join,
+        }))
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = endpoint;
         Err("daemon control server is only supported on unix in current MVP".to_string())

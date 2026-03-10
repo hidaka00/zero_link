@@ -58,6 +58,23 @@ jobs:
           kill "$pid"
           wait "$pid" || true
 
+      - name: Daemon health smoke (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build -p connectord -p zl-cli
+          $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50") -PassThru
+          try {
+            Start-Sleep -Milliseconds 800
+            $env:ZL_ENDPOINT = "daemon://local"
+            .\\target\\debug\\zl-cli.exe daemon-health
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force
+            }
+          }
+
       - name: Smoke pubsub
         run: cargo run -p zl-cli -- smoke-pubsub audio/asr/text ci-smoke
 
