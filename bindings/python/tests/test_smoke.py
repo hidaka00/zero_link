@@ -50,6 +50,22 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertGreater(len(received[0]), 0)
 
+    def test_publish_buffer_roundtrip_local(self) -> None:
+        received = []
+
+        def on_msg(_topic, _header, payload):
+            received.append(payload)
+
+        with Client("local") as client:
+            client.subscribe("audio/asr/text", on_msg)
+            client.publish_buffer("audio/asr/text", b"py-buffer")
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not received:
+                time.sleep(0.05)
+            client.unsubscribe("audio/asr/text")
+
+        self.assertEqual(received, [b"py-buffer"])
+
     def test_pubsub_roundtrip_daemon(self) -> None:
         if os.getenv("ZEROLINK_PY_SMOKE_DAEMON", "0") not in {"1", "true", "TRUE"}:
             self.skipTest("set ZEROLINK_PY_SMOKE_DAEMON=1 to enable daemon smoke")

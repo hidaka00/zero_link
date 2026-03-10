@@ -92,6 +92,14 @@ class _ZlBufferRef(ctypes.Structure):
     ]
 
 
+@dataclass
+class BufferRef:
+    buffer_id: int
+    offset: int
+    length: int
+    flags: int = 0
+
+
 CallbackFn = ctypes.CFUNCTYPE(
     None,
     ctypes.c_char_p,
@@ -193,6 +201,69 @@ class Client:
         )
         self._check(st, "zl_send_control")
 
+    def alloc_buffer(self, size: int) -> tuple[BufferRef, ctypes.Array]:
+        if size <= 0:
+            raise ZlInvalidArgError(int(ZlStatus.INVALID_ARG), "zl_alloc_buffer")
+        out_ref = _ZlBufferRef()
+        out_ptr = ctypes.c_void_p()
+        st = self._lib.zl_alloc_buffer(
+            self._client,
+            size,
+            ctypes.byref(out_ref),
+            ctypes.byref(out_ptr),
+        )
+        self._check(st, "zl_alloc_buffer")
+        if not out_ptr.value:
+            raise ZlInternalError(int(ZlStatus.INTERNAL), "zl_alloc_buffer")
+        data = (ctypes.c_ubyte * size).from_address(out_ptr.value)
+        return (
+            BufferRef(
+                buffer_id=out_ref.buffer_id,
+                offset=out_ref.offset,
+                length=out_ref.length,
+                flags=out_ref.flags,
+            ),
+            data,
+        )
+
+    def release_buffer(self, buffer_id: int) -> None:
+        st = self._lib.zl_release_buffer(self._client, buffer_id)
+        self._check(st, "zl_release_buffer")
+
+    def publish_buffer(
+        self, topic: str, payload: bytes, header: MsgHeader | None = None
+    ) -> None:
+        ref, data = self.alloc_buffer(len(payload))
+        try:
+            ctypes.memmove(ctypes.addressof(data), payload, len(payload))
+            h = header or MsgHeader(msg_type=1, size=len(payload))
+            h.msg_type = 1
+            h.size = len(payload)
+            hdr = _ZlMsgHeader(
+                msg_type=h.msg_type,
+                timestamp_ns=h.timestamp_ns,
+                size=h.size,
+                schema_id=h.schema_id,
+                trace_id=h.trace_id,
+            )
+            native_ref = _ZlBufferRef(
+                buffer_id=ref.buffer_id,
+                offset=ref.offset,
+                length=ref.length,
+                flags=ref.flags,
+            )
+            st = self._lib.zl_publish(
+                self._client,
+                topic.encode("utf-8"),
+                ctypes.byref(hdr),
+                None,
+                0,
+                ctypes.byref(native_ref),
+            )
+            self._check(st, "zl_publish")
+        finally:
+            self.release_buffer(ref.buffer_id)
+
     def health(self, endpoint: str | None = None) -> dict[str, Any]:
         endpoint_value = endpoint or self._endpoint
         if not endpoint_value.startswith("daemon://"):
@@ -237,6 +308,17 @@ class Client:
 
         self._lib.zl_unsubscribe.argtypes = [ctypes.POINTER(_ZlClient), ctypes.c_char_p]
         self._lib.zl_unsubscribe.restype = ctypes.c_int32
+
+        self._lib.zl_alloc_buffer.argtypes = [
+            ctypes.POINTER(_ZlClient),
+            ctypes.c_uint32,
+            ctypes.POINTER(_ZlBufferRef),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._lib.zl_alloc_buffer.restype = ctypes.c_int32
+
+        self._lib.zl_release_buffer.argtypes = [ctypes.POINTER(_ZlClient), ctypes.c_uint64]
+        self._lib.zl_release_buffer.restype = ctypes.c_int32
 
         self._lib.zl_send_control.argtypes = [
             ctypes.POINTER(_ZlClient),

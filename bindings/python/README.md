@@ -6,6 +6,7 @@ Minimal Python wrapper over the ZeroLink C ABI.
 
 - open/close client
 - publish event payload
+- publish frame payload via shared buffer reference (`publish_buffer`)
 - subscribe/unsubscribe with Python callback
 - send control envelope (`send_control`)
 - daemon health query (`health`, daemon endpoint only)

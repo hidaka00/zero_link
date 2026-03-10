@@ -1,4 +1,5 @@
 from .client import (
+    BufferRef,
     Client,
     MsgHeader,
     ZlBufferFullError,
@@ -15,6 +16,7 @@ from .client import (
 __all__ = [
     "Client",
     "MsgHeader",
+    "BufferRef",
     "ZlStatus",
     "ZlError",
     "ZlInvalidArgError",
