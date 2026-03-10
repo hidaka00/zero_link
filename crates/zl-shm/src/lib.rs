@@ -269,8 +269,7 @@ impl ShmManager {
                 if end > *len {
                     return Err(ShmError::InvalidRange);
                 }
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(view.Value as *const u8, *len) };
+                let bytes = unsafe { std::slice::from_raw_parts(view.Value as *const u8, *len) };
                 Ok(bytes[start..end].to_vec())
             }
         }
