@@ -114,6 +114,29 @@ fn control_self_check(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn control_self_check_with_retry(endpoint: &str) -> Result<(), String> {
+    let (attempts, delay_ms) = if endpoint.starts_with("daemon://") {
+        (20usize, 50u64)
+    } else {
+        (1usize, 0u64)
+    };
+
+    let mut last_err: Option<String> = None;
+    for _ in 0..attempts {
+        match control_self_check(endpoint) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if delay_ms > 0 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| "control self-check failed".to_string()))
+}
+
 fn topic_from_prefixed<'a>(payload: &'a [u8], prefix: &[u8]) -> Option<&'a str> {
     let bytes = payload.strip_prefix(prefix)?;
     let topic = std::str::from_utf8(bytes).ok()?;
@@ -479,7 +502,7 @@ fn run_serve(args: &[String]) -> i32 {
             return 1;
         }
     };
-    if let Err(msg) = control_self_check(&control_endpoint) {
+    if let Err(msg) = control_self_check_with_retry(&control_endpoint) {
         eprintln!("{msg}");
         if let Some(server) = daemon_server {
             server.stop();

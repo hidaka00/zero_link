@@ -80,19 +80,20 @@ jobs:
             $env:ZL_ENDPOINT = "daemon://local"
             $ok = $false
             for ($i = 0; $i -lt 10; $i++) {
-              try {
-                .\\target\\debug\\zl-cli.exe daemon-health
+              .\\target\\debug\\zl-cli.exe daemon-health
+              if ($LASTEXITCODE -eq 0) {
                 $ok = $true
                 break
-              } catch {
-                Start-Sleep -Milliseconds 300
               }
+              Start-Sleep -Milliseconds 300
             }
             if (-not $ok) {
               throw "daemon-health failed after retries"
             }
             .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win
+            if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub failed" }
             .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
+            if ($LASTEXITCODE -ne 0) { throw "smoke-control failed" }
           } finally {
             if ($proc -and -not $proc.HasExited) {
               Stop-Process -Id $proc.Id -Force
