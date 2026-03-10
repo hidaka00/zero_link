@@ -5,8 +5,8 @@ use std::ffi::CString;
 use std::sync::mpsc;
 use std::time::Duration;
 use zl_ffi::{
-    zl_client_close, zl_client_open, zl_publish, zl_send_control, zl_subscribe, zl_unsubscribe,
-    ZlClient, ZlMsgHeader, ZlStatus,
+    zl_alloc_buffer, zl_client_close, zl_client_open, zl_publish, zl_release_buffer,
+    zl_send_control, zl_subscribe, zl_unsubscribe, ZlBufferRef, ZlClient, ZlMsgHeader, ZlStatus,
 };
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +75,9 @@ fn usage() {
     println!("  smoke-pubsub [topic] [message]");
     println!("  smoke-burst [topic] [count]");
     println!("  smoke-trace [topic] [trace_id]");
+    println!("  smoke-isolation [topic] [message]");
+    println!("  smoke-buffer-ref [topic] [message]");
+    println!("  smoke-metrics");
     println!("  smoke-subscribe [topic] [wait_ms]");
     println!("  smoke-control [topic] [command] [payload]");
     println!("  daemon-health");
@@ -364,6 +367,208 @@ fn smoke_trace(topic: &str, trace_id: u64) -> i32 {
     }
 }
 
+fn smoke_isolation(topic: &str, message: &str) -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => return 2,
+    };
+
+    let survivor = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+    let failing = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = unsafe { zl_client_close(survivor) };
+            return 1;
+        }
+    };
+
+    let (tx_survivor, rx_survivor) = mpsc::channel::<Vec<u8>>();
+    let user_survivor = &tx_survivor as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = unsafe {
+        zl_subscribe(
+            survivor,
+            topic_c.as_ptr(),
+            Some(payload_callback),
+            user_survivor,
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_client_close(failing) };
+        let _ = unsafe { zl_client_close(survivor) };
+        return 1;
+    }
+
+    let (tx_failing, _rx_failing) = mpsc::channel::<Vec<u8>>();
+    let user_failing = &tx_failing as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = unsafe {
+        zl_subscribe(
+            failing,
+            topic_c.as_ptr(),
+            Some(payload_callback),
+            user_failing,
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_unsubscribe(survivor, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(failing) };
+        let _ = unsafe { zl_client_close(survivor) };
+        return 1;
+    }
+
+    // Simulate one node failure while connector and another node continue.
+    let _ = unsafe { zl_client_close(failing) };
+
+    let bytes = message.as_bytes();
+    let header = ZlMsgHeader {
+        msg_type: 2,
+        timestamp_ns: 0,
+        size: bytes.len() as u32,
+        schema_id: 1,
+        trace_id: 77,
+    };
+    let st = unsafe {
+        zl_publish(
+            survivor,
+            topic_c.as_ptr(),
+            &header as *const ZlMsgHeader,
+            bytes.as_ptr() as *const c_void,
+            bytes.len() as u32,
+            std::ptr::null(),
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_unsubscribe(survivor, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(survivor) };
+        return 1;
+    }
+
+    let got = match rx_survivor.recv_timeout(Duration::from_secs(2)) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = unsafe { zl_unsubscribe(survivor, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(survivor) };
+            return 1;
+        }
+    };
+    let _ = unsafe { zl_unsubscribe(survivor, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(survivor) };
+    println!("isolation_received={}", String::from_utf8_lossy(&got));
+    0
+}
+
+fn smoke_buffer_ref(topic: &str, message: &str) -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => return 2,
+    };
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data) };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    let bytes = message.as_bytes();
+    let mut out_ref = ZlBufferRef {
+        buffer_id: 0,
+        offset: 0,
+        length: 0,
+        flags: 0,
+    };
+    let mut out_ptr: *mut c_void = std::ptr::null_mut();
+    let st = unsafe {
+        zl_alloc_buffer(
+            client,
+            bytes.len() as u32,
+            &mut out_ref as *mut ZlBufferRef,
+            &mut out_ptr as *mut *mut c_void,
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) || out_ptr.is_null() {
+        let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr as *mut u8, bytes.len());
+    }
+
+    let header = ZlMsgHeader {
+        msg_type: 1,
+        timestamp_ns: 0,
+        size: bytes.len() as u32,
+        schema_id: 1,
+        trace_id: 88,
+    };
+    let st = unsafe {
+        zl_publish(
+            client,
+            topic_c.as_ptr(),
+            &header as *const ZlMsgHeader,
+            std::ptr::null(),
+            0,
+            &out_ref as *const ZlBufferRef,
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_release_buffer(client, out_ref.buffer_id) };
+        let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    let got = match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = unsafe { zl_release_buffer(client, out_ref.buffer_id) };
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
+            return 1;
+        }
+    };
+    let _ = unsafe { zl_release_buffer(client, out_ref.buffer_id) };
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
+    println!("buffer_ref_received={}", String::from_utf8_lossy(&got));
+    0
+}
+
+fn smoke_metrics() -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "daemon://local".to_string());
+    let mut buf = [0u8; 2048];
+    let len = match zl_ipc::control_request(&endpoint, b"health", &mut buf) {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    let text = String::from_utf8_lossy(&buf[..len]);
+    let parsed = match serde_json::from_str::<DaemonHealthResponse>(&text) {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    let ok = parsed.p50_latency_us.is_some()
+        && parsed.p95_latency_us.is_some()
+        && parsed.throughput_per_sec.is_some()
+        && parsed.queue_depth.is_some()
+        && parsed.dropped_messages.is_some();
+    if ok {
+        println!("metrics_ok=true");
+        0
+    } else {
+        1
+    }
+}
+
 fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
     let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
     let topic_c = match CString::new(topic) {
@@ -492,6 +697,17 @@ fn main() {
                 .unwrap_or(42);
             smoke_trace(topic, trace_id)
         }
+        "smoke-isolation" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let message = args.get(3).map_or("isolation", String::as_str);
+            smoke_isolation(topic, message)
+        }
+        "smoke-buffer-ref" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let message = args.get(3).map_or("buffer-ref", String::as_str);
+            smoke_buffer_ref(topic, message)
+        }
+        "smoke-metrics" => smoke_metrics(),
         "smoke-subscribe" => {
             let topic = args.get(2).map_or("audio/asr/text", String::as_str);
             let wait_ms = args

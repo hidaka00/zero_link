@@ -57,6 +57,9 @@ jobs:
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-burst audio/asr/text 50
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-trace audio/asr/text 9001
+          ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-isolation audio/asr/text ci-isolation
+          ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-buffer-ref audio/asr/text ci-buffer-ref
+          ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-metrics
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-stream
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-fallback
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 ZL_STREAM_TEST_FORCE_CONNECT_FAIL=1 target/debug/zl-cli smoke-subscribe audio/asr/text 400
@@ -115,6 +118,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "smoke-burst failed" }
             .\\target\\debug\\zl-cli.exe smoke-trace audio/asr/text 9001
             if ($LASTEXITCODE -ne 0) { throw "smoke-trace failed" }
+            .\\target\\debug\\zl-cli.exe smoke-isolation audio/asr/text ci-isolation
+            if ($LASTEXITCODE -ne 0) { throw "smoke-isolation failed" }
+            .\\target\\debug\\zl-cli.exe smoke-buffer-ref audio/asr/text ci-buffer-ref
+            if ($LASTEXITCODE -ne 0) { throw "smoke-buffer-ref failed" }
+            .\\target\\debug\\zl-cli.exe smoke-metrics
+            if ($LASTEXITCODE -ne 0) { throw "smoke-metrics failed" }
             $env:ZL_DAEMON_SUBSCRIBE_MODE = "stream"
             .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-stream
             if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (stream) failed" }
