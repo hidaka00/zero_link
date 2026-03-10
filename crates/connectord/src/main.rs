@@ -75,7 +75,20 @@ struct DaemonState {
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
 
+fn test_hooks_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    matches!(
+        env::var("ZL_ENABLE_TEST_HOOKS"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
 fn test_force_stream_disconnect_once_enabled() -> bool {
+    if !test_hooks_enabled() {
+        return false;
+    }
     matches!(
         env::var("ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE"),
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")

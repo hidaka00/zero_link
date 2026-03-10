@@ -341,6 +341,16 @@ fn daemon_subscribe_use_stream() -> bool {
 
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 
+fn test_hooks_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    matches!(
+        std::env::var("ZL_ENABLE_TEST_HOOKS"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
 fn stream_reconnect_failures_before_pull_fallback() -> u32 {
     std::env::var("ZL_STREAM_FALLBACK_THRESHOLD")
         .ok()
@@ -350,6 +360,9 @@ fn stream_reconnect_failures_before_pull_fallback() -> u32 {
 }
 
 fn stream_test_force_connect_fail() -> bool {
+    if !test_hooks_enabled() {
+        return false;
+    }
     matches!(
         std::env::var("ZL_STREAM_TEST_FORCE_CONNECT_FAIL"),
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
@@ -357,6 +370,9 @@ fn stream_test_force_connect_fail() -> bool {
 }
 
 fn stream_test_force_reopen_fail() -> bool {
+    if !test_hooks_enabled() {
+        return false;
+    }
     matches!(
         std::env::var("ZL_STREAM_TEST_FORCE_REOPEN_FAIL"),
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
