@@ -26,6 +26,12 @@ Minimal Python wrapper over the ZeroLink C ABI.
 PYTHONPATH=bindings/python/src python3 bindings/python/examples/pubsub.py
 ```
 
+Daemon example (requires `connectord` running on `daemon://local`):
+
+```bash
+PYTHONPATH=bindings/python/src python3 bindings/python/examples/daemon_demo.py
+```
+
 You can override native library path with `ZEROLINK_NATIVE_LIB`.
 
 3. Optional: install as editable package for local development (no public publish):
