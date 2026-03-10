@@ -3,3 +3,6 @@ name = "zl-shm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

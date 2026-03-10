@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::fd::RawFd;
 
 #[derive(Debug)]
 pub enum ShmError {
@@ -25,11 +29,22 @@ impl Default for ShmConfig {
     }
 }
 
+enum BufferSlot {
+    #[cfg(unix)]
+    UnixShm {
+        ptr: *mut u8,
+        len: usize,
+        fd: RawFd,
+        name: CString,
+    },
+    Heap(Box<[u8]>),
+}
+
 pub struct ShmManager {
     config: ShmConfig,
     next_id: u64,
     used_bytes: u64,
-    slots: HashMap<u64, Box<[u8]>>,
+    slots: HashMap<u64, BufferSlot>,
 }
 
 impl ShmManager {
@@ -40,6 +55,61 @@ impl ShmManager {
             used_bytes: 0,
             slots: HashMap::new(),
         }
+    }
+
+    #[cfg(unix)]
+    fn alloc_unix_shm(&mut self, id: u64, size: u32) -> ShmResult<(u64, *mut u8)> {
+        let name = format!("/zl_shm_{}_{}", std::process::id(), id);
+        let cname = CString::new(name).map_err(|_| ShmError::InvalidArg)?;
+        let fd = unsafe {
+            libc::shm_open(
+                cname.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(ShmError::ShmExhausted);
+        }
+
+        let len = size as usize;
+        if unsafe { libc::ftruncate(fd, len as libc::off_t) } != 0 {
+            unsafe {
+                libc::close(fd);
+                libc::shm_unlink(cname.as_ptr());
+            }
+            return Err(ShmError::ShmExhausted);
+        }
+
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if map == libc::MAP_FAILED {
+            unsafe {
+                libc::close(fd);
+                libc::shm_unlink(cname.as_ptr());
+            }
+            return Err(ShmError::ShmExhausted);
+        }
+
+        let ptr = map as *mut u8;
+        self.slots.insert(
+            id,
+            BufferSlot::UnixShm {
+                ptr,
+                len,
+                fd,
+                name: cname,
+            },
+        );
+        Ok((id, ptr))
     }
 
     pub fn alloc(&mut self, size: u32) -> ShmResult<(u64, *mut u8)> {
@@ -57,9 +127,26 @@ impl ShmManager {
             return Err(ShmError::InvalidArg);
         }
 
-        let mut data = vec![0u8; size as usize].into_boxed_slice();
-        let ptr = data.as_mut_ptr();
-        self.slots.insert(id, data);
+        #[cfg(unix)]
+        let unix_alloc = self.alloc_unix_shm(id, size);
+        #[cfg(unix)]
+        let (id, ptr) = match unix_alloc {
+            Ok(v) => v,
+            Err(_) => {
+                let mut data = vec![0u8; size as usize].into_boxed_slice();
+                let ptr = data.as_mut_ptr();
+                self.slots.insert(id, BufferSlot::Heap(data));
+                (id, ptr)
+            }
+        };
+        #[cfg(not(unix))]
+        let (id, ptr) = {
+            let mut data = vec![0u8; size as usize].into_boxed_slice();
+            let ptr = data.as_mut_ptr();
+            self.slots.insert(id, BufferSlot::Heap(data));
+            (id, ptr)
+        };
+
         self.used_bytes = self.used_bytes.saturating_add(size_u64);
         Ok((id, ptr))
     }
@@ -71,7 +158,20 @@ impl ShmManager {
         let Some(slot) = self.slots.remove(&id) else {
             return Err(ShmError::NotFound);
         };
-        self.used_bytes = self.used_bytes.saturating_sub(slot.len() as u64);
+        match slot {
+            #[cfg(unix)]
+            BufferSlot::UnixShm { ptr, len, fd, name } => {
+                unsafe {
+                    libc::munmap(ptr as *mut libc::c_void, len);
+                    libc::close(fd);
+                    libc::shm_unlink(name.as_ptr());
+                }
+                self.used_bytes = self.used_bytes.saturating_sub(len as u64);
+            }
+            BufferSlot::Heap(data) => {
+                self.used_bytes = self.used_bytes.saturating_sub(data.len() as u64);
+            }
+        }
         Ok(())
     }
 
@@ -82,10 +182,22 @@ impl ShmManager {
         let start = offset as usize;
         let len = length as usize;
         let end = start.saturating_add(len);
-        if end > slot.len() {
-            return Err(ShmError::InvalidRange);
+        match slot {
+            #[cfg(unix)]
+            BufferSlot::UnixShm { ptr, len, .. } => {
+                if end > *len {
+                    return Err(ShmError::InvalidRange);
+                }
+                let bytes = unsafe { std::slice::from_raw_parts(*ptr as *const u8, *len) };
+                Ok(bytes[start..end].to_vec())
+            }
+            BufferSlot::Heap(data) => {
+                if end > data.len() {
+                    return Err(ShmError::InvalidRange);
+                }
+                Ok(data[start..end].to_vec())
+            }
         }
-        Ok(slot[start..end].to_vec())
     }
 }
 
@@ -116,5 +228,26 @@ mod tests {
             sweep_interval_ms: 100,
         });
         assert!(matches!(m.alloc(8), Err(ShmError::ShmExhausted)));
+    }
+
+    #[test]
+    fn read_range_roundtrip() {
+        let mut m = ShmManager::default();
+        let (id, ptr) = m.alloc(5).expect("alloc");
+        unsafe {
+            std::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr, 5);
+        }
+        let got = m.read_range(id, 1, 3).expect("read");
+        assert_eq!(got, b"ell");
+        let _ = m.release(id);
+    }
+
+    #[test]
+    fn read_range_out_of_bounds_fails() {
+        let mut m = ShmManager::default();
+        let (id, _ptr) = m.alloc(2).expect("alloc");
+        let err = m.read_range(id, 1, 2).expect_err("should fail");
+        assert!(matches!(err, ShmError::InvalidRange));
+        let _ = m.release(id);
     }
 }

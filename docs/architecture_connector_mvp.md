@@ -241,7 +241,8 @@ ABI 互換ポリシー:
 - M3 進捗: `zl-ffi` の buffer 実体管理を `zl-shm::ShmManager` に統合済み（hard limit / alloc / release / range read）。
 - CI に A-01/A-05 の最小スモーク（`smoke-burst`, `smoke-trace`）を追加済み。
 - CI に A-02/A-03/A-04 の最小スモーク（`smoke-isolation`, `smoke-buffer-ref`, `smoke-metrics`）を追加済み。
-- 残タスク: OS ネイティブ shared memory backend への置換と、A-01〜A-05 を長時間・高負荷条件へ拡張。
+- `zl-shm` backend は Unix で `shm_open + mmap` を利用し、利用不可環境では heap fallback を使用。
+- 残タスク: Windows 側の OS ネイティブ shared memory backend 実装と、A-01〜A-05 を長時間・高負荷条件へ拡張。
 
 ## 10. MVP 固定値（実装開始前に確定）
 
