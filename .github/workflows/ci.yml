@@ -83,6 +83,11 @@ jobs:
           [ "${fallback_reopen:-0}" -ge 1 ]
           [ "${fallback_recv:-0}" -ge 1 ]
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-control _sys/control reload '{}'
+          ./scripts/bindings/build_native.sh
+          ZEROLINK_PY_SMOKE_DAEMON=1 \
+          ZEROLINK_PY_ENDPOINT=daemon://local \
+          PYTHONPATH=bindings/python/src \
+          python3 -m unittest -v bindings/python/tests/test_smoke.py
           kill "$pid"
           wait "$pid" || true
 
