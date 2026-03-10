@@ -209,6 +209,7 @@ dependencies = [
  "serde_json",
  "zl-ffi",
  "zl-ipc",
+ "zl-proto",
 ]
 
 [[package]]
