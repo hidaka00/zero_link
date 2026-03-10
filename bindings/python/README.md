@@ -32,6 +32,10 @@ Daemon example (requires `connectord` running on `daemon://local`):
 PYTHONPATH=bindings/python/src python3 bindings/python/examples/daemon_demo.py
 ```
 
+The daemon demo prints `schema_id` for each callback and validates both:
+- `SCHEMA_RAW_BYTES_V1` (buffer-ref frame path)
+- `SCHEMA_UTF8_STRING_V1` (text event path)
+
 You can override native library path with `ZEROLINK_NATIVE_LIB`.
 
 3. Optional: install as editable package for local development (no public publish):
