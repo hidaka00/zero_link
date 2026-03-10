@@ -49,13 +49,17 @@ jobs:
           set -euo pipefail
           cargo build -p connectord -p zl-cli
           LOG_PATH="/tmp/connectord-daemon.log"
-          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
+          ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1 target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           sleep 0.4
           ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-stream
+          ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-fallback
+          health_out="$(ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health)"
+          echo "$health_out"
+          echo "$health_out" | grep -q '^stream_fallback_recv_count=1$'
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-control _sys/control reload '{}'
           kill "$pid"
           wait "$pid" || true

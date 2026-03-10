@@ -231,7 +231,9 @@ ABI 互換ポリシー:
 - stream 障害時の pull への自動フォールバック（再接続失敗しきい値到達時）は実装済み。
 - `connectord` health に `stream_fallback_to_pull_count` と理由別カウンタ
   （`stream_fallback_connect_count` / `stream_fallback_reopen_count` / `stream_fallback_recv_count`）を追加済み。
-- 残タスク: CI で意図的な切断を注入し、理由別カウンタが期待通り増える統合試験を追加。
+- CI (Linux) で stream 切断注入 (`ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1`) と
+  `stream_fallback_recv_count` 検証を追加済み。
+- 残タスク: Windows 側でも切断注入を伴う理由別メトリクス検証を追加。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

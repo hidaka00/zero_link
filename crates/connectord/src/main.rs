@@ -75,6 +75,13 @@ struct DaemonState {
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
 
+fn test_force_stream_disconnect_once_enabled() -> bool {
+    matches!(
+        env::var("ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
 fn usage() {
     println!("connectord commands:");
     println!(
@@ -318,6 +325,8 @@ fn start_daemon_control_server(
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let path_owned = path.to_string();
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let force_stream_disconnect_once =
+            Arc::new(AtomicBool::new(test_force_stream_disconnect_once_enabled()));
         let join = thread::spawn(move || {
             let shared_state = Arc::new(Mutex::new(DaemonState {
                 queues: HashMap::new(),
@@ -339,6 +348,8 @@ fn start_daemon_control_server(
                     Ok((mut stream, _addr)) => {
                         let state = Arc::clone(&shared_state);
                         let worker_stop = Arc::clone(&stop_flag);
+                        let worker_force_stream_disconnect_once =
+                            Arc::clone(&force_stream_disconnect_once);
                         workers.push(thread::spawn(move || loop {
                             let mut len_buf = [0u8; 4];
                             if stream.read_exact(&mut len_buf).is_err() {
@@ -369,6 +380,11 @@ fn start_daemon_control_server(
                             }
 
                             if let Some(topic) = stream_topic {
+                                if worker_force_stream_disconnect_once
+                                    .swap(false, Ordering::Relaxed)
+                                {
+                                    break;
+                                }
                                 while !worker_stop.load(Ordering::Relaxed) {
                                     let frame = match state.lock() {
                                         Ok(mut guard) => pop_topic_message(&mut guard, &topic),
@@ -494,6 +510,8 @@ fn start_daemon_control_server(
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let endpoint_owned = endpoint.to_string();
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let force_stream_disconnect_once =
+            Arc::new(AtomicBool::new(test_force_stream_disconnect_once_enabled()));
         let join = thread::spawn(move || {
             let shared_state = Arc::new(Mutex::new(DaemonState {
                 queues: HashMap::new(),
@@ -542,6 +560,7 @@ fn start_daemon_control_server(
 
                 let state = Arc::clone(&shared_state);
                 let worker_stop = Arc::clone(&stop_flag);
+                let worker_force_stream_disconnect_once = Arc::clone(&force_stream_disconnect_once);
                 let worker_handle = handle as isize;
                 workers.push(thread::spawn(move || {
                     let handle = worker_handle as HANDLE;
@@ -575,6 +594,9 @@ fn start_daemon_control_server(
                         }
 
                         if let Some(topic) = stream_topic {
+                            if worker_force_stream_disconnect_once.swap(false, Ordering::Relaxed) {
+                                break;
+                            }
                             while !worker_stop.load(Ordering::Relaxed) {
                                 let frame = match state.lock() {
                                     Ok(mut guard) => pop_topic_message(&mut guard, &topic),

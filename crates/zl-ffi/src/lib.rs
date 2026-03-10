@@ -341,6 +341,14 @@ fn daemon_subscribe_use_stream() -> bool {
 
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 
+fn stream_reconnect_failures_before_pull_fallback() -> u32 {
+    std::env::var("ZL_STREAM_FALLBACK_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK)
+}
+
 fn report_stream_fallback_metric(endpoint: &str, reason: &str) {
     let req = format!("metric:stream_fallback_to_pull:{reason}");
     let mut resp = [0u8; 256];
@@ -592,6 +600,7 @@ pub unsafe extern "C" fn zl_subscribe(
         if use_stream {
             let poll_req = poll_request_body(&topic_str);
             thread::spawn(move || {
+                let fallback_threshold = stream_reconnect_failures_before_pull_fallback();
                 let mut active_session = Some(session);
                 let mut reconnect_backoff_ms = 50u64;
                 let mut reconnect_failures = 0u32;
@@ -646,9 +655,7 @@ pub unsafe extern "C" fn zl_subscribe(
                                 reconnect_backoff_ms =
                                     (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
                                 reconnect_failures = reconnect_failures.saturating_add(1);
-                                if reconnect_failures
-                                    >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
-                                {
+                                if reconnect_failures >= fallback_threshold {
                                     activate_pull_fallback(
                                         &endpoint,
                                         &mut use_pull_fallback,
@@ -667,9 +674,7 @@ pub unsafe extern "C" fn zl_subscribe(
                                 reconnect_backoff_ms =
                                     (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
                                 reconnect_failures = reconnect_failures.saturating_add(1);
-                                if reconnect_failures
-                                    >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
-                                {
+                                if reconnect_failures >= fallback_threshold {
                                     activate_pull_fallback(
                                         &endpoint,
                                         &mut use_pull_fallback,
@@ -685,8 +690,7 @@ pub unsafe extern "C" fn zl_subscribe(
                             reconnect_backoff_ms =
                                 (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
                             reconnect_failures = reconnect_failures.saturating_add(1);
-                            if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
-                            {
+                            if reconnect_failures >= fallback_threshold {
                                 activate_pull_fallback(
                                     &endpoint,
                                     &mut use_pull_fallback,
@@ -740,8 +744,7 @@ pub unsafe extern "C" fn zl_subscribe(
                             reconnect_backoff_ms =
                                 (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
                             reconnect_failures = reconnect_failures.saturating_add(1);
-                            if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
-                            {
+                            if reconnect_failures >= fallback_threshold {
                                 activate_pull_fallback(
                                     &endpoint,
                                     &mut use_pull_fallback,
