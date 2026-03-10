@@ -11,7 +11,10 @@ pub enum IpcError {
 }
 
 pub type IpcResult<T> = Result<T, IpcError>;
-pub const DAEMON_LOCAL_SOCKET_PATH: &str = "/tmp/zerolink_connectord.sock";
+#[cfg(unix)]
+pub const DAEMON_LOCAL_TRANSPORT_TARGET: &str = "/tmp/zerolink_connectord.sock";
+#[cfg(windows)]
+pub const DAEMON_LOCAL_TRANSPORT_TARGET: &str = r"\\.\pipe\zerolink_connectord";
 
 pub trait ControlChannel: Send + Sync {
     fn send(&self, _data: &[u8]) -> IpcResult<()> {
@@ -84,9 +87,9 @@ impl ControlChannel for UnixSocketControlChannel {
     }
 }
 
-pub fn daemon_socket_path(endpoint: &str) -> IpcResult<&'static str> {
+pub fn daemon_transport_target(endpoint: &str) -> IpcResult<&'static str> {
     match endpoint {
-        "daemon://local" => Ok(DAEMON_LOCAL_SOCKET_PATH),
+        "daemon://local" => Ok(DAEMON_LOCAL_TRANSPORT_TARGET),
         v if v.starts_with("daemon://") => Err(IpcError::InvalidEndpoint),
         _ => Err(IpcError::InvalidEndpoint),
     }
@@ -97,9 +100,10 @@ pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChann
         return Ok(Box::new(LoopbackControlChannel::default()));
     }
     if endpoint.starts_with("daemon://") {
+        let _target = daemon_transport_target(endpoint)?;
         #[cfg(unix)]
         {
-            let path = daemon_socket_path(endpoint)?;
+            let path = daemon_transport_target(endpoint)?;
             let stream = std::os::unix::net::UnixStream::connect(path)
                 .map_err(|_| IpcError::Disconnected)?;
             return Ok(Box::new(UnixSocketControlChannel {
@@ -108,7 +112,7 @@ pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChann
         }
         #[cfg(not(unix))]
         {
-            let _ = endpoint;
+            let _ = _target;
             return Err(IpcError::Disconnected);
         }
     }

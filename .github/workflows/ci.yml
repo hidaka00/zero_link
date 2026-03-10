@@ -9,7 +9,11 @@ on:
 
 jobs:
   rust-checks:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout
@@ -39,6 +43,7 @@ jobs:
         run: cargo run -p connectord -- serve --max-runtime-ms 250 --tick-ms 50
 
       - name: Daemon endpoint smoke
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail

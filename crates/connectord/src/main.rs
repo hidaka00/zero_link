@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use zl_ipc::{connect_control_channel, daemon_socket_path};
+use zl_ipc::{connect_control_channel, daemon_transport_target};
 
 fn usage() {
     println!("connectord commands:");
@@ -100,7 +100,7 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
     {
         use std::os::unix::net::UnixListener;
 
-        let path = daemon_socket_path(endpoint)
+        let path = daemon_transport_target(endpoint)
             .map_err(|e| format!("invalid daemon endpoint {endpoint}: {e:?}"))?;
         let _ = fs::remove_file(path);
         let listener =
