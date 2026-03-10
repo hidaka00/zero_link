@@ -342,13 +342,7 @@ fn daemon_subscribe_use_stream() -> bool {
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 
 fn test_hooks_enabled() -> bool {
-    if cfg!(debug_assertions) {
-        return true;
-    }
-    matches!(
-        std::env::var("ZL_ENABLE_TEST_HOOKS"),
-        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
-    )
+    cfg!(debug_assertions)
 }
 
 fn stream_reconnect_failures_before_pull_fallback() -> u32 {

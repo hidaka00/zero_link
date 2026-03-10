@@ -77,19 +77,14 @@ struct DaemonState {
     poll_empty_count: u64,
     stream_message_frame_count: u64,
     latency_samples_us: VecDeque<u64>,
+    publish_timestamps_ns: VecDeque<u64>,
     metrics: TopicStats,
 }
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
 
 fn test_hooks_enabled() -> bool {
-    if cfg!(debug_assertions) {
-        return true;
-    }
-    matches!(
-        env::var("ZL_ENABLE_TEST_HOOKS"),
-        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
-    )
+    cfg!(debug_assertions)
 }
 
 fn test_force_stream_disconnect_once_enabled() -> bool {
@@ -217,8 +212,16 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 fn refresh_topic_stats(state: &mut DaemonState) {
     state.metrics.drops = state.dropped_messages;
     state.metrics.queue_depth = total_queue_depth(state);
-    // MVP note: this is currently an aggregate counter, not per-second throughput.
-    state.metrics.throughput_per_sec = state.publish_count;
+    let now_ns = now_unix_ns();
+    let window_ns = 1_000_000_000u64;
+    while let Some(ts) = state.publish_timestamps_ns.front().copied() {
+        if now_ns.saturating_sub(ts) > window_ns {
+            let _ = state.publish_timestamps_ns.pop_front();
+        } else {
+            break;
+        }
+    }
+    state.metrics.throughput_per_sec = state.publish_timestamps_ns.len() as u64;
 
     if state.latency_samples_us.is_empty() {
         state.metrics.p50_latency_us = 0;
@@ -249,6 +252,7 @@ fn observe_publish_latency(state: &mut DaemonState, header: &PublishMirrorHeader
 fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
     observe_publish_latency(state, &msg.header);
     state.publish_count = state.publish_count.saturating_add(1);
+    state.publish_timestamps_ns.push_back(now_unix_ns());
     let queue = state.queues.entry(msg.topic.clone()).or_default();
     if queue.len() >= state.queue_limit {
         let _ = queue.pop_front();
@@ -430,6 +434,7 @@ fn start_daemon_control_server(
                 poll_empty_count: 0,
                 stream_message_frame_count: 0,
                 latency_samples_us: VecDeque::new(),
+                publish_timestamps_ns: VecDeque::new(),
                 metrics: TopicStats::default(),
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
@@ -627,6 +632,7 @@ fn start_daemon_control_server(
                 poll_empty_count: 0,
                 stream_message_frame_count: 0,
                 latency_samples_us: VecDeque::new(),
+                publish_timestamps_ns: VecDeque::new(),
                 metrics: TopicStats::default(),
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
@@ -923,6 +929,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let got = control_response(b"health", &mut state);
@@ -945,6 +952,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let got = control_response(b"control:\x01\x02", &mut state);
@@ -967,6 +975,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let got = control_response(b"publish:\x01\x02\x03", &mut state);
@@ -989,6 +998,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let sub = control_response(b"subscribe:audio/asr/text", &mut state);
@@ -1038,6 +1048,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let topic = "audio/asr/text";
@@ -1086,6 +1097,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let text = String::from_utf8(control_response(b"health", &mut state))
@@ -1113,6 +1125,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let got = control_response(b"metric:stream_fallback_to_pull", &mut state);
@@ -1136,6 +1149,7 @@ mod tests {
             poll_empty_count: 0,
             stream_message_frame_count: 0,
             latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::new(),
             metrics: TopicStats::default(),
         };
         let _ = control_response(b"metric:stream_fallback_to_pull:reopen", &mut state);
@@ -1143,5 +1157,29 @@ mod tests {
         assert_eq!(state.stream_fallback_connect_count, 0);
         assert_eq!(state.stream_fallback_reopen_count, 1);
         assert_eq!(state.stream_fallback_recv_count, 0);
+    }
+
+    #[test]
+    fn refresh_topic_stats_uses_one_second_publish_window() {
+        let now = now_unix_ns();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+            stream_fallback_to_pull_count: 0,
+            stream_fallback_connect_count: 0,
+            stream_fallback_reopen_count: 0,
+            stream_fallback_recv_count: 0,
+            publish_count: 2,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            publish_timestamps_ns: VecDeque::from([now.saturating_sub(2_000_000_000), now]),
+            metrics: TopicStats::default(),
+        };
+        refresh_topic_stats(&mut state);
+        assert_eq!(state.metrics.throughput_per_sec, 1);
+        assert_eq!(state.publish_timestamps_ns.len(), 1);
     }
 }
