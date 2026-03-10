@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 zl-router = { path = "../zl-router" }
 zl-proto = { path = "../zl-proto" }
+zl-ipc = { path = "../zl-ipc" }
