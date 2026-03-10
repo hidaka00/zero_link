@@ -16,9 +16,37 @@ pub struct ZlClient {
 }
 
 struct Client {
-    router: Router,
+    transport: ClientTransport,
     subscriptions: Mutex<HashMap<String, Subscription>>,
     buffers: Mutex<BufferStore>,
+}
+
+enum ClientTransport {
+    InMemory(InMemoryTransport),
+}
+
+struct InMemoryTransport {
+    router: Router,
+}
+
+impl ClientTransport {
+    fn in_memory() -> Self {
+        Self::InMemory(InMemoryTransport {
+            router: Router::new(),
+        })
+    }
+
+    fn publish(&self, topic: &str, msg: RoutedMessage) -> Result<usize, RouterError> {
+        match self {
+            Self::InMemory(transport) => transport.router.publish(topic, msg),
+        }
+    }
+
+    fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<RoutedMessage>, RouterError> {
+        match self {
+            Self::InMemory(transport) => transport.router.subscribe(topic),
+        }
+    }
 }
 
 struct Subscription {
@@ -214,7 +242,7 @@ pub unsafe extern "C" fn zl_client_open(
 
     let client = Box::new(ZlClient {
         inner: Client {
-            router: Router::new(),
+            transport: ClientTransport::in_memory(),
             subscriptions: Mutex::new(HashMap::new()),
             buffers: Mutex::new(BufferStore {
                 next_id: 1,
@@ -307,8 +335,8 @@ pub unsafe extern "C" fn zl_publish(
     };
 
     // Safety: client pointer checked for null and only immutably accessed.
-    let router = unsafe { &(*client).inner.router };
-    match router.publish(topic_str, msg) {
+    let transport = unsafe { &(*client).inner.transport };
+    match transport.publish(topic_str, msg) {
         Ok(_) => ZlStatus::Ok,
         Err(e) => from_router_error(e),
     }
@@ -337,8 +365,8 @@ pub unsafe extern "C" fn zl_subscribe(
     };
 
     // Safety: client pointer checked for null and only immutably accessed.
-    let router = unsafe { &(*client).inner.router };
-    let rx = match router.subscribe(&topic_str) {
+    let transport = unsafe { &(*client).inner.transport };
+    let rx = match transport.subscribe(&topic_str) {
         Ok(rx) => rx,
         Err(e) => return from_router_error(e),
     };

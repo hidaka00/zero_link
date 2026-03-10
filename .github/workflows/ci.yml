@@ -32,6 +32,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      - name: Connectord health
+        run: cargo run -p connectord -- health
+
+      - name: Connectord lifecycle smoke
+        run: cargo run -p connectord -- serve --max-runtime-ms 250 --tick-ms 50
+
       - name: Smoke pubsub
         run: cargo run -p zl-cli -- smoke-pubsub audio/asr/text ci-smoke
 
