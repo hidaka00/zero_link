@@ -4,6 +4,15 @@ import os
 
 from zerolink import (
     Client,
+    SCHEMA_BOOL_V1,
+    SCHEMA_BYTES_WITH_MIME_JSON_V1,
+    SCHEMA_FLOAT32_LE_V1,
+    SCHEMA_FLOAT64_LE_V1,
+    SCHEMA_INT32_LE_V1,
+    SCHEMA_INT64_LE_V1,
+    SCHEMA_TIMESTAMP_NS_I64_V1,
+    SCHEMA_UINT64_LE_V1,
+    SCHEMA_UTF8_STRING_V1,
     ZlBufferFullError,
     ZlError,
     ZlInternalError,
@@ -13,17 +22,14 @@ from zerolink import (
     ZlShmExhaustedError,
     ZlStatus,
     ZlTimeoutError,
-    SCHEMA_UTF8_STRING_V1,
-    SCHEMA_INT64_LE_V1,
-    SCHEMA_FLOAT64_LE_V1,
-    SCHEMA_BOOL_V1,
-    SCHEMA_INT32_LE_V1,
-    SCHEMA_UINT64_LE_V1,
     decode_bool,
+    decode_bytes_with_mime,
+    decode_float32,
     decode_int32,
-    decode_int64,
     decode_float64,
+    decode_int64,
     decode_string,
+    decode_timestamp_ns_i64,
     decode_uint64,
     string_header,
 )
@@ -86,25 +92,38 @@ class SmokeTest(unittest.TestCase):
             client.publish_uint64("audio/asr/text", 1234567890123, trace_id=105)
             client.publish_float64("audio/asr/text", 3.5, trace_id=102)
             client.publish_bool("audio/asr/text", True, trace_id=106)
+            client.publish_float32("audio/asr/text", 2.25, trace_id=107)
+            client.publish_timestamp_ns("audio/asr/text", 1700000000000000123, trace_id=108)
+            client.publish_bytes_with_mime(
+                "audio/asr/text", b"\x00\x01bin", "application/octet-stream", trace_id=109
+            )
             client.publish_string("audio/asr/text", "scalar", trace_id=103)
             deadline = time.time() + 2.0
-            while time.time() < deadline and len(received) < 6:
+            while time.time() < deadline and len(received) < 9:
                 time.sleep(0.05)
             client.unsubscribe("audio/asr/text")
 
-        self.assertEqual(len(received), 6)
+        self.assertEqual(len(received), 9)
         self.assertEqual(headers[0].schema_id, SCHEMA_INT64_LE_V1)
         self.assertEqual(headers[1].schema_id, SCHEMA_INT32_LE_V1)
         self.assertEqual(headers[2].schema_id, SCHEMA_UINT64_LE_V1)
         self.assertEqual(headers[3].schema_id, SCHEMA_FLOAT64_LE_V1)
         self.assertEqual(headers[4].schema_id, SCHEMA_BOOL_V1)
-        self.assertEqual(headers[5].schema_id, SCHEMA_UTF8_STRING_V1)
+        self.assertEqual(headers[5].schema_id, SCHEMA_FLOAT32_LE_V1)
+        self.assertEqual(headers[6].schema_id, SCHEMA_TIMESTAMP_NS_I64_V1)
+        self.assertEqual(headers[7].schema_id, SCHEMA_BYTES_WITH_MIME_JSON_V1)
+        self.assertEqual(headers[8].schema_id, SCHEMA_UTF8_STRING_V1)
         self.assertEqual(decode_int64(received[0]), 42)
         self.assertEqual(decode_int32(received[1]), -7)
         self.assertEqual(decode_uint64(received[2]), 1234567890123)
         self.assertAlmostEqual(decode_float64(received[3]), 3.5)
         self.assertEqual(decode_bool(received[4]), True)
-        self.assertEqual(decode_string(received[5]), "scalar")
+        self.assertAlmostEqual(decode_float32(received[5]), 2.25, places=6)
+        self.assertEqual(decode_timestamp_ns_i64(received[6]), 1700000000000000123)
+        mime_type, mime_payload = decode_bytes_with_mime(received[7])
+        self.assertEqual(mime_type, "application/octet-stream")
+        self.assertEqual(mime_payload, b"\x00\x01bin")
+        self.assertEqual(decode_string(received[8]), "scalar")
 
     def test_publish_buffer_roundtrip_local(self) -> None:
         received = []

@@ -14,7 +14,10 @@ pub mod schema {
     pub const BOOL_V1: u32 = 1004;
     pub const INT32_LE_V1: u32 = 1005;
     pub const UINT64_LE_V1: u32 = 1006;
+    pub const FLOAT32_LE_V1: u32 = 1007;
+    pub const TIMESTAMP_NS_I64_V1: u32 = 1008;
     pub const IMAGE_FRAME_V1: u32 = 1101;
+    pub const BYTES_WITH_MIME_JSON_V1: u32 = 1201;
 }
 
 #[derive(Debug, Clone, Copy)]

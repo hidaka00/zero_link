@@ -6,7 +6,7 @@ Minimal Python wrapper over the ZeroLink C ABI.
 
 - open/close client
 - publish event payload
-- publish typed scalars (`publish_int64`, `publish_float64`, `publish_string`)
+- publish typed helpers (`publish_int64`, `publish_int32`, `publish_uint64`, `publish_float64`, `publish_float32`, `publish_bool`, `publish_timestamp_ns`, `publish_string`, `publish_bytes_with_mime`)
 - publish frame payload via shared buffer reference (`publish_buffer`)
 - subscribe/unsubscribe with Python callback
 - send control envelope (`send_control`)
@@ -73,10 +73,14 @@ Daemon smoke includes both standard publish and buffer-ref publish paths.
 The package exports common schema IDs and codec helpers for cross-process consistency:
 
 - `SCHEMA_INT64_LE_V1`, `SCHEMA_INT32_LE_V1`, `SCHEMA_UINT64_LE_V1`
-- `SCHEMA_FLOAT64_LE_V1`, `SCHEMA_BOOL_V1`, `SCHEMA_UTF8_STRING_V1`, `SCHEMA_IMAGE_FRAME_V1`
+- `SCHEMA_FLOAT64_LE_V1`, `SCHEMA_FLOAT32_LE_V1`, `SCHEMA_BOOL_V1`
+- `SCHEMA_TIMESTAMP_NS_I64_V1`, `SCHEMA_UTF8_STRING_V1`, `SCHEMA_IMAGE_FRAME_V1`
+- `SCHEMA_BYTES_WITH_MIME_JSON_V1`
 - `encode_int64/decode_int64`, `encode_int32/decode_int32`, `encode_uint64/decode_uint64`
-- `encode_float64/decode_float64`, `encode_bool/decode_bool`
+- `encode_float64/decode_float64`, `encode_float32/decode_float32`, `encode_bool/decode_bool`
+- `encode_timestamp_ns_i64/decode_timestamp_ns_i64`
 - `encode_string/decode_string`
+- `encode_bytes_with_mime/decode_bytes_with_mime`, `MimeBytesEnvelope`
 - `ImageMeta` (JSON metadata helper for image frame side-channel)
 
 Schema definitions are documented under `docs/schemas/`.

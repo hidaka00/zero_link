@@ -10,15 +10,21 @@ from ._native import load_library
 from .schemas import (
     SCHEMA_RAW_BYTES_V1,
     bool_header,
+    bytes_with_mime_header,
+    encode_bytes_with_mime,
     encode_bool,
+    encode_float32,
     encode_float64,
     encode_int32,
     encode_int64,
     encode_string,
+    encode_timestamp_ns_i64,
+    float32_header,
     float64_header,
     int32_header,
     int64_header,
     string_header,
+    timestamp_ns_i64_header,
     encode_uint64,
     uint64_header,
 )
@@ -188,13 +194,35 @@ class Client:
         payload = encode_float64(value)
         self.publish(topic, payload, header=float64_header(value, trace_id=trace_id))
 
+    def publish_float32(self, topic: str, value: float, *, trace_id: int = 1) -> None:
+        payload = encode_float32(value)
+        self.publish(topic, payload, header=float32_header(value, trace_id=trace_id))
+
     def publish_bool(self, topic: str, value: bool, *, trace_id: int = 1) -> None:
         payload = encode_bool(value)
         self.publish(topic, payload, header=bool_header(value, trace_id=trace_id))
 
+    def publish_timestamp_ns(self, topic: str, value: int, *, trace_id: int = 1) -> None:
+        payload = encode_timestamp_ns_i64(value)
+        self.publish(
+            topic,
+            payload,
+            header=timestamp_ns_i64_header(value, trace_id=trace_id),
+        )
+
     def publish_string(self, topic: str, value: str, *, trace_id: int = 1) -> None:
         payload = encode_string(value)
         self.publish(topic, payload, header=string_header(value, trace_id=trace_id))
+
+    def publish_bytes_with_mime(
+        self, topic: str, data: bytes, mime_type: str, *, trace_id: int = 1
+    ) -> None:
+        payload = encode_bytes_with_mime(data, mime_type)
+        self.publish(
+            topic,
+            payload,
+            header=bytes_with_mime_header(payload, trace_id=trace_id),
+        )
 
     def subscribe(self, topic: str, callback: Callable[[str, MsgHeader, bytes], None]) -> None:
         def _cb(topic_ptr, header_ptr, payload_ptr, _buf_ref_ptr, _user_data):

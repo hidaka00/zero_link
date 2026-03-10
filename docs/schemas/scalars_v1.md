@@ -41,3 +41,18 @@
 - Header:
   - `type=2` (`Event`)
   - `size=8`
+
+## `float32_le.v1` (`schema_id=1007`)
+
+- Payload: 4 bytes, IEEE754 float32 little-endian.
+- Header:
+  - `type=2` (`Event`)
+  - `size=4`
+
+## `timestamp_ns_i64.v1` (`schema_id=1008`)
+
+- Payload: 8 bytes, little-endian signed int64.
+- Semantics: unix timestamp in nanoseconds.
+- Header:
+  - `type=2` (`Event`)
+  - `size=8`

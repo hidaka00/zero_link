@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import struct
 from dataclasses import dataclass
@@ -11,7 +12,10 @@ SCHEMA_UTF8_STRING_V1 = 1003
 SCHEMA_BOOL_V1 = 1004
 SCHEMA_INT32_LE_V1 = 1005
 SCHEMA_UINT64_LE_V1 = 1006
+SCHEMA_FLOAT32_LE_V1 = 1007
+SCHEMA_TIMESTAMP_NS_I64_V1 = 1008
 SCHEMA_IMAGE_FRAME_V1 = 1101
+SCHEMA_BYTES_WITH_MIME_JSON_V1 = 1201
 
 
 def _msg_header(*, msg_type: int, size: int, schema_id: int, trace_id: int, timestamp_ns: int):
@@ -97,6 +101,38 @@ def uint64_header(value: int, *, trace_id: int = 1, timestamp_ns: int = 0):
     )
 
 
+def float32_header(value: float, *, trace_id: int = 1, timestamp_ns: int = 0):
+    return _msg_header(
+        msg_type=2,
+        size=4,
+        schema_id=SCHEMA_FLOAT32_LE_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
+def timestamp_ns_i64_header(value: int, *, trace_id: int = 1, timestamp_ns: int = 0):
+    return _msg_header(
+        msg_type=2,
+        size=8,
+        schema_id=SCHEMA_TIMESTAMP_NS_I64_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
+def bytes_with_mime_header(
+    encoded_payload: bytes, *, trace_id: int = 1, timestamp_ns: int = 0
+):
+    return _msg_header(
+        msg_type=2,
+        size=len(encoded_payload),
+        schema_id=SCHEMA_BYTES_WITH_MIME_JSON_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
 def encode_int64(value: int) -> bytes:
     return struct.pack("<q", value)
 
@@ -155,6 +191,35 @@ def decode_uint64(payload: bytes) -> int:
     return struct.unpack("<Q", payload)[0]
 
 
+def encode_float32(value: float) -> bytes:
+    return struct.pack("<f", value)
+
+
+def decode_float32(payload: bytes) -> float:
+    if len(payload) != 4:
+        raise ValueError("float32 payload length must be 4")
+    return struct.unpack("<f", payload)[0]
+
+
+def encode_timestamp_ns_i64(value: int) -> bytes:
+    return struct.pack("<q", value)
+
+
+def decode_timestamp_ns_i64(payload: bytes) -> int:
+    if len(payload) != 8:
+        raise ValueError("timestamp_ns_i64 payload length must be 8")
+    return struct.unpack("<q", payload)[0]
+
+
+def encode_bytes_with_mime(data: bytes, mime_type: str) -> bytes:
+    return MimeBytesEnvelope(mime_type=mime_type, data=data).to_json_bytes()
+
+
+def decode_bytes_with_mime(payload: bytes) -> tuple[str, bytes]:
+    env = MimeBytesEnvelope.from_json_bytes(payload)
+    return env.mime_type, env.data
+
+
 @dataclass
 class ImageMeta:
     width: int
@@ -184,4 +249,25 @@ class ImageMeta:
             channels=int(obj["channels"]),
             stride_bytes=int(obj["stride_bytes"]),
             pixel_format=str(obj["pixel_format"]),
+        )
+
+
+@dataclass
+class MimeBytesEnvelope:
+    mime_type: str
+    data: bytes
+
+    def to_json_bytes(self) -> bytes:
+        obj = {
+            "mime_type": self.mime_type,
+            "data_b64": base64.b64encode(self.data).decode("ascii"),
+        }
+        return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def from_json_bytes(cls, payload: bytes) -> "MimeBytesEnvelope":
+        obj = json.loads(payload.decode("utf-8"))
+        return cls(
+            mime_type=str(obj["mime_type"]),
+            data=base64.b64decode(str(obj["data_b64"])),
         )

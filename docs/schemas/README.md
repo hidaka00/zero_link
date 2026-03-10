@@ -17,7 +17,10 @@ This directory defines standard cross-process message schema IDs for ZeroLink.
 - `1004`: `bool.v1`
 - `1005`: `int32_le.v1`
 - `1006`: `uint64_le.v1`
+- `1007`: `float32_le.v1`
+- `1008`: `timestamp_ns_i64.v1`
 - `1101`: `image_frame.v1`
+- `1201`: `bytes_with_mime_json.v1`
 
 ## Compatibility policy
 

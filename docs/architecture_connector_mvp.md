@@ -246,7 +246,7 @@ ABI 互換ポリシー:
 - CI に `nightly-soak`（schedule / workflow_dispatch）を追加し、A-01〜A-05 を 10 分連続実行する長時間検証を運用開始。
 - nightly soak に `dropped_messages` / `p95_latency_us` / `throughput_per_sec` の fail gate を追加済み（環境変数で閾値調整可能）。
 - `bindings/python` に `ctypes` ベースの MVP ラッパー（open/publish/subscribe/close）と smoke 例を追加済み。
-- `docs/schemas` に標準 `schema_id`（int64/float64/string/image）の MVP 定義を追加済み。
+- `docs/schemas` に標準 `schema_id`（int64/int32/uint64/float64/float32/bool/timestamp/string/image/bytes_with_mime）の MVP 定義を追加済み。
 - 残タスク: 運用データに合わせて fail gate の既定閾値を段階的に引き締める。
 
 ## 10. MVP 固定値（実装開始前に確定）
