@@ -27,6 +27,12 @@ Minimal Python wrapper over the ZeroLink C ABI.
 PYTHONPATH=bindings/python/src python3 bindings/python/examples/pubsub.py
 ```
 
+Scalar helper demo:
+
+```bash
+PYTHONPATH=bindings/python/src python3 bindings/python/examples/scalars_demo.py
+```
+
 Daemon example (requires `connectord` running on `daemon://local`):
 
 ```bash
