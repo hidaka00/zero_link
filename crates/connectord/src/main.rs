@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::env;
-#[cfg(windows)]
-use std::ffi::c_void;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -13,14 +11,16 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+use windows_sys::Win32::Storage::FileSystem::{
+    FlushFileBuffers, ReadFile, WriteFile, PIPE_ACCESS_DUPLEX,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
-    PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+    PIPE_WAIT,
 };
 use zl_ipc::{connect_control_channel, daemon_transport_target};
 
@@ -287,13 +287,13 @@ fn start_daemon_control_server(
         use std::iter;
         use std::os::windows::ffi::OsStrExt;
 
-        fn win_read_exact(handle: isize, mut buf: &mut [u8]) -> bool {
+        fn win_read_exact(handle: HANDLE, mut buf: &mut [u8]) -> bool {
             while !buf.is_empty() {
                 let mut read = 0u32;
                 let ok = unsafe {
                     ReadFile(
                         handle,
-                        buf.as_mut_ptr() as *mut c_void,
+                        buf.as_mut_ptr(),
                         u32::try_from(buf.len()).unwrap_or(u32::MAX),
                         &mut read as *mut u32,
                         std::ptr::null_mut(),
@@ -312,13 +312,13 @@ fn start_daemon_control_server(
             true
         }
 
-        fn win_write_all(handle: isize, mut buf: &[u8]) -> bool {
+        fn win_write_all(handle: HANDLE, mut buf: &[u8]) -> bool {
             while !buf.is_empty() {
                 let mut written = 0u32;
                 let ok = unsafe {
                     WriteFile(
                         handle,
-                        buf.as_ptr() as *const c_void,
+                        buf.as_ptr(),
                         u32::try_from(buf.len()).unwrap_or(u32::MAX),
                         &mut written as *mut u32,
                         std::ptr::null_mut(),
