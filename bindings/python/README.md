@@ -48,3 +48,5 @@ ZEROLINK_PY_SMOKE_DAEMON=1 \
 ZEROLINK_PY_ENDPOINT=daemon://local \
 python3 -m unittest -v bindings/python/tests/test_smoke.py
 ```
+
+Daemon smoke includes both standard publish and buffer-ref publish paths.
