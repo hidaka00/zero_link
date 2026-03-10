@@ -99,6 +99,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:ZL_SMOKE_TIMEOUT_MS = "5000"
           $env:ZL_SMOKE_SUBSCRIBE_SETTLE_MS = "150"
+          $env:ZL_DAEMON_REQUEST_RETRIES = "10"
+          $env:ZL_DAEMON_REQUEST_BACKOFF_MS = "80"
+          $env:ZL_DAEMON_SUBSCRIBE_OPEN_RETRIES = "15"
+          $env:ZL_DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS = "100"
           cargo build -p connectord -p zl-cli
           $stdoutLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stdout.log"
           $stderrLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stderr.log"
@@ -112,12 +116,31 @@ jobs:
           }
           try {
             $env:ZL_ENDPOINT = "daemon://local"
+            function Show-DaemonLogs() {
+              if (Test-Path $stdoutLog) {
+                Write-Host "===== connectord stdout (tail 200) ====="
+                Get-Content $stdoutLog -Tail 200
+              } else {
+                Write-Host "connectord stdout log not found: $stdoutLog"
+              }
+              if (Test-Path $stderrLog) {
+                Write-Host "===== connectord stderr (tail 200) ====="
+                Get-Content $stderrLog -Tail 200
+              } else {
+                Write-Host "connectord stderr log not found: $stderrLog"
+              }
+            }
             function Invoke-ZlCliRetry([string[]]$CliArgs, [string]$Label, [int]$Retries = 3, [int]$DelayMs = 300) {
               for ($attempt = 1; $attempt -le $Retries; $attempt++) {
-                .\\target\\debug\\zl-cli.exe @CliArgs
-                if ($LASTEXITCODE -eq 0) {
+                $cmdOut = .\\target\\debug\\zl-cli.exe @CliArgs 2>&1 | Out-String
+                if (-not [string]::IsNullOrWhiteSpace($cmdOut)) {
+                  Write-Host $cmdOut.TrimEnd()
+                }
+                $exitCode = $LASTEXITCODE
+                if ($exitCode -eq 0) {
                   return
                 }
+                Write-Host "[$Label] attempt $attempt/$Retries failed (exit=$exitCode)"
                 if ($attempt -lt $Retries) {
                   Start-Sleep -Milliseconds $DelayMs
                 }
@@ -192,6 +215,10 @@ jobs:
             Remove-Item Env:ZL_DAEMON_SUBSCRIBE_MODE -ErrorAction SilentlyContinue
             .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
             if ($LASTEXITCODE -ne 0) { throw "smoke-control failed" }
+          } catch {
+            Write-Host "Windows daemon smoke failed: $($_.Exception.Message)"
+            Show-DaemonLogs
+            throw
           } finally {
             if ($proc -and -not $proc.HasExited) {
               Stop-Process -Id $proc.Id -Force

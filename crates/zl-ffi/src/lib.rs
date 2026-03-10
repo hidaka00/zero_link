@@ -342,6 +342,8 @@ fn daemon_subscribe_use_stream() -> bool {
 const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
 const DAEMON_SUBSCRIBE_OPEN_RETRIES: u32 = 10;
 const DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS: u64 = 100;
+const DAEMON_REQUEST_RETRIES: u32 = 5;
+const DAEMON_REQUEST_BACKOFF_MS: u64 = 50;
 
 fn test_hooks_enabled() -> bool {
     cfg!(debug_assertions)
@@ -369,6 +371,22 @@ fn daemon_subscribe_open_backoff_ms() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS)
+}
+
+fn daemon_request_retries() -> u32 {
+    std::env::var("ZL_DAEMON_REQUEST_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DAEMON_REQUEST_RETRIES)
+}
+
+fn daemon_request_backoff_ms() -> u64 {
+    std::env::var("ZL_DAEMON_REQUEST_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DAEMON_REQUEST_BACKOFF_MS)
 }
 
 fn stream_test_force_connect_fail() -> bool {
@@ -457,6 +475,34 @@ fn open_daemon_subscription_session(
         };
         daemon_response_ok(&sub_resp[..sub_len])?;
         return Ok(session);
+    }
+
+    Err(last_status)
+}
+
+fn daemon_control_request_with_retry(
+    endpoint: &str,
+    request: &[u8],
+    response_buf: &mut [u8],
+) -> Result<usize, ZlStatus> {
+    let retries = daemon_request_retries();
+    let backoff_ms = daemon_request_backoff_ms();
+    let mut last_status = ZlStatus::IpcDisconnected;
+
+    for attempt in 0..retries {
+        match zl_ipc::control_request(endpoint, request, response_buf) {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                let status = from_ipc_error(err);
+                last_status = status;
+                if !matches!(status, ZlStatus::IpcDisconnected) {
+                    return Err(status);
+                }
+                if attempt + 1 < retries {
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                }
+            }
+        }
     }
 
     Err(last_status)
@@ -608,9 +654,9 @@ pub unsafe extern "C" fn zl_publish(
             Err(s) => return s,
         };
         let mut resp = [0u8; 1024];
-        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+        let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
-            Err(err) => return from_ipc_error(err),
+            Err(s) => return s,
         };
         if let Err(s) = daemon_response_ok(&resp[..len]) {
             return s;
@@ -988,9 +1034,9 @@ pub unsafe extern "C" fn zl_unsubscribe(client: *mut ZlClient, topic: *const c_c
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = unsubscribe_request_body(topic_str);
         let mut resp = [0u8; 512];
-        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+        let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
-            Err(err) => return from_ipc_error(err),
+            Err(s) => return s,
         };
         if let Err(s) = daemon_response_ok(&resp[..len]) {
             return s;
@@ -1112,9 +1158,9 @@ pub unsafe extern "C" fn zl_send_control(
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = control_request_body(&body);
         let mut resp = [0u8; 512];
-        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+        let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
-            Err(err) => return from_ipc_error(err),
+            Err(s) => return s,
         };
         if let Err(s) = daemon_response_ok(&resp[..len]) {
             return s;
