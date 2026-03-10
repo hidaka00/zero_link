@@ -69,6 +69,8 @@ jobs:
             Start-Sleep -Milliseconds 800
             $env:ZL_ENDPOINT = "daemon://local"
             .\\target\\debug\\zl-cli.exe daemon-health
+            .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win
+            .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
           } finally {
             if ($proc -and -not $proc.HasExited) {
               Stop-Process -Id $proc.Id -Force
