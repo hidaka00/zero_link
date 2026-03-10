@@ -27,6 +27,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_WAIT,
 };
 use zl_ipc::{connect_control_channel, daemon_transport_target};
+use zl_metrics::TopicStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PublishMirrorEnvelope {
@@ -71,6 +72,12 @@ struct DaemonState {
     stream_fallback_connect_count: u64,
     stream_fallback_reopen_count: u64,
     stream_fallback_recv_count: u64,
+    publish_count: u64,
+    poll_hit_count: u64,
+    poll_empty_count: u64,
+    stream_message_frame_count: u64,
+    latency_samples_us: VecDeque<u64>,
+    metrics: TopicStats,
 }
 
 const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
@@ -187,13 +194,68 @@ fn stream_open_topic(payload: &[u8]) -> Option<&str> {
     topic_from_prefixed(payload, b"stream-open:")
 }
 
+fn now_unix_ns() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+fn total_queue_depth(state: &DaemonState) -> u64 {
+    state.queues.values().map(|q| q.len() as u64).sum()
+}
+
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn refresh_topic_stats(state: &mut DaemonState) {
+    state.metrics.drops = state.dropped_messages;
+    state.metrics.queue_depth = total_queue_depth(state);
+    // MVP note: this is currently an aggregate counter, not per-second throughput.
+    state.metrics.throughput_per_sec = state.publish_count;
+
+    if state.latency_samples_us.is_empty() {
+        state.metrics.p50_latency_us = 0;
+        state.metrics.p95_latency_us = 0;
+        return;
+    }
+    let mut sorted: Vec<u64> = state.latency_samples_us.iter().copied().collect();
+    sorted.sort_unstable();
+    state.metrics.p50_latency_us = percentile(&sorted, 0.50);
+    state.metrics.p95_latency_us = percentile(&sorted, 0.95);
+}
+
+fn observe_publish_latency(state: &mut DaemonState, header: &PublishMirrorHeader) {
+    if header.timestamp_ns == 0 {
+        return;
+    }
+    let now = now_unix_ns();
+    if now < header.timestamp_ns {
+        return;
+    }
+    let us = (now - header.timestamp_ns) / 1_000;
+    state.latency_samples_us.push_back(us);
+    if state.latency_samples_us.len() > 256 {
+        let _ = state.latency_samples_us.pop_front();
+    }
+}
+
 fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
+    observe_publish_latency(state, &msg.header);
+    state.publish_count = state.publish_count.saturating_add(1);
     let queue = state.queues.entry(msg.topic.clone()).or_default();
     if queue.len() >= state.queue_limit {
         let _ = queue.pop_front();
         state.dropped_messages = state.dropped_messages.saturating_add(1);
     }
     queue.push_back(msg);
+    refresh_topic_stats(state);
 }
 
 fn pop_topic_message(state: &mut DaemonState, topic: &str) -> Option<PublishMirrorEnvelope> {
@@ -202,13 +264,21 @@ fn pop_topic_message(state: &mut DaemonState, topic: &str) -> Option<PublishMirr
 
 fn health_response(state: &DaemonState) -> Vec<u8> {
     format!(
-        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{},\"stream_fallback_to_pull_count\":{},\"stream_fallback_connect_count\":{},\"stream_fallback_reopen_count\":{},\"stream_fallback_recv_count\":{}}}",
+        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{},\"stream_fallback_to_pull_count\":{},\"stream_fallback_connect_count\":{},\"stream_fallback_reopen_count\":{},\"stream_fallback_recv_count\":{},\"publish_count\":{},\"poll_hit_count\":{},\"poll_empty_count\":{},\"stream_message_frame_count\":{},\"p50_latency_us\":{},\"p95_latency_us\":{},\"throughput_per_sec\":{},\"queue_depth\":{}}}",
         state.queue_limit,
         state.dropped_messages,
         state.stream_fallback_to_pull_count,
         state.stream_fallback_connect_count,
         state.stream_fallback_reopen_count,
-        state.stream_fallback_recv_count
+        state.stream_fallback_recv_count,
+        state.publish_count,
+        state.poll_hit_count,
+        state.poll_empty_count,
+        state.stream_message_frame_count,
+        state.metrics.p50_latency_us,
+        state.metrics.p95_latency_us,
+        state.metrics.throughput_per_sec,
+        state.metrics.queue_depth
     )
     .into_bytes()
 }
@@ -239,6 +309,12 @@ fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
     }
     if let Some(topic) = topic_from_prefixed(payload, b"poll:") {
         let maybe = pop_topic_message(state, topic);
+        if maybe.is_some() {
+            state.poll_hit_count = state.poll_hit_count.saturating_add(1);
+        } else {
+            state.poll_empty_count = state.poll_empty_count.saturating_add(1);
+        }
+        refresh_topic_stats(state);
         let resp = match maybe {
             Some(msg) => DaemonPollResponse::Message {
                 header: msg.header,
@@ -349,6 +425,12 @@ fn start_daemon_control_server(
                 stream_fallback_connect_count: 0,
                 stream_fallback_reopen_count: 0,
                 stream_fallback_recv_count: 0,
+                publish_count: 0,
+                poll_hit_count: 0,
+                poll_empty_count: 0,
+                stream_message_frame_count: 0,
+                latency_samples_us: VecDeque::new(),
+                metrics: TopicStats::default(),
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -405,6 +487,12 @@ fn start_daemon_control_server(
                                     };
                                     let body = match frame {
                                         Some(msg) => {
+                                            if let Ok(mut guard) = state.lock() {
+                                                guard.stream_message_frame_count = guard
+                                                    .stream_message_frame_count
+                                                    .saturating_add(1);
+                                                refresh_topic_stats(&mut guard);
+                                            }
                                             encode_stream_frame(DaemonStreamFrame::Message {
                                                 header: msg.header,
                                                 payload: msg.payload,
@@ -534,6 +622,12 @@ fn start_daemon_control_server(
                 stream_fallback_connect_count: 0,
                 stream_fallback_reopen_count: 0,
                 stream_fallback_recv_count: 0,
+                publish_count: 0,
+                poll_hit_count: 0,
+                poll_empty_count: 0,
+                stream_message_frame_count: 0,
+                latency_samples_us: VecDeque::new(),
+                metrics: TopicStats::default(),
             }));
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
@@ -616,10 +710,17 @@ fn start_daemon_control_server(
                                     Err(_) => break,
                                 };
                                 let body = match frame {
-                                    Some(msg) => encode_stream_frame(DaemonStreamFrame::Message {
-                                        header: msg.header,
-                                        payload: msg.payload,
-                                    }),
+                                    Some(msg) => {
+                                        if let Ok(mut guard) = state.lock() {
+                                            guard.stream_message_frame_count =
+                                                guard.stream_message_frame_count.saturating_add(1);
+                                            refresh_topic_stats(&mut guard);
+                                        }
+                                        encode_stream_frame(DaemonStreamFrame::Message {
+                                            header: msg.header,
+                                            payload: msg.payload,
+                                        })
+                                    }
                                     None => encode_stream_frame(DaemonStreamFrame::Heartbeat),
                                 };
                                 let frame_len = match u32::try_from(body.len()) {
@@ -817,6 +918,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let got = control_response(b"health", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -833,6 +940,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let got = control_response(b"control:\x01\x02", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -849,6 +962,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let got = control_response(b"publish:\x01\x02\x03", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -865,6 +984,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let sub = control_response(b"subscribe:audio/asr/text", &mut state);
         let sub_text = String::from_utf8(sub).expect("valid utf8");
@@ -908,6 +1033,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let topic = "audio/asr/text";
         let _ = control_response(format!("subscribe:{topic}").as_bytes(), &mut state);
@@ -950,6 +1081,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let text = String::from_utf8(control_response(b"health", &mut state))
             .expect("health should be utf8");
@@ -971,6 +1108,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let got = control_response(b"metric:stream_fallback_to_pull", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
@@ -988,6 +1131,12 @@ mod tests {
             stream_fallback_connect_count: 0,
             stream_fallback_reopen_count: 0,
             stream_fallback_recv_count: 0,
+            publish_count: 0,
+            poll_hit_count: 0,
+            poll_empty_count: 0,
+            stream_message_frame_count: 0,
+            latency_samples_us: VecDeque::new(),
+            metrics: TopicStats::default(),
         };
         let _ = control_response(b"metric:stream_fallback_to_pull:reopen", &mut state);
         assert_eq!(state.stream_fallback_to_pull_count, 1);

@@ -236,6 +236,7 @@ ABI 互換ポリシー:
 - CI (Windows) でも切断注入と `stream_fallback_recv_count` 検証を追加済み。
 - CI (Linux/Windows) に connect/reopen の理由別フォールバック統合シナリオを追加済み。
 - テスト用環境変数フックは debug build で既定有効、release build は `ZL_ENABLE_TEST_HOOKS=1` の明示設定時のみ有効。
+- `daemon-health` で publish/poll/stream の集計カウンタと `TopicStats`（`p50/p95 latency`, `throughput_per_sec`, `queue_depth`, `drops`）を取得可能。
 - 残タスク: リリース配布方針に合わせて test hook の公開可否を最終固定。
 
 ## 10. MVP 固定値（実装開始前に確定）

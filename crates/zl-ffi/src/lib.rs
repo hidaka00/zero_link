@@ -445,7 +445,7 @@ pub unsafe extern "C" fn zl_client_open(
         let Some(endpoint_str) = daemon_endpoint.as_deref() else {
             return ZlStatus::InvalidArg;
         };
-        let mut resp = [0u8; 256];
+        let mut resp = [0u8; 2048];
         let len = match zl_ipc::control_request(endpoint_str, b"health", &mut resp) {
             Ok(v) => v,
             Err(err) => return from_ipc_error(err),

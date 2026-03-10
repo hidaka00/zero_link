@@ -10,6 +10,7 @@ dependencies = [
  "serde_cbor",
  "windows-sys",
  "zl-ipc",
+ "zl-metrics",
  "zl-proto",
  "zl-router",
 ]

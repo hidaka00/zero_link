@@ -22,6 +22,14 @@ struct DaemonHealthResponse {
     mode: String,
     queue_limit: Option<u64>,
     dropped_messages: Option<u64>,
+    publish_count: Option<u64>,
+    poll_hit_count: Option<u64>,
+    poll_empty_count: Option<u64>,
+    stream_message_frame_count: Option<u64>,
+    p50_latency_us: Option<u64>,
+    p95_latency_us: Option<u64>,
+    throughput_per_sec: Option<u64>,
+    queue_depth: Option<u64>,
     stream_fallback_to_pull_count: Option<u64>,
     stream_fallback_connect_count: Option<u64>,
     stream_fallback_reopen_count: Option<u64>,
@@ -251,7 +259,7 @@ fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
 
 fn daemon_health() -> i32 {
     let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "daemon://local".to_string());
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 2048];
     let len = match zl_ipc::control_request(&endpoint, b"health", &mut buf) {
         Ok(v) => v,
         Err(err) => {
@@ -270,6 +278,30 @@ fn daemon_health() -> i32 {
             }
             if let Some(dropped) = v.dropped_messages {
                 println!("dropped_messages={dropped}");
+            }
+            if let Some(count) = v.publish_count {
+                println!("publish_count={count}");
+            }
+            if let Some(count) = v.poll_hit_count {
+                println!("poll_hit_count={count}");
+            }
+            if let Some(count) = v.poll_empty_count {
+                println!("poll_empty_count={count}");
+            }
+            if let Some(count) = v.stream_message_frame_count {
+                println!("stream_message_frame_count={count}");
+            }
+            if let Some(v) = v.p50_latency_us {
+                println!("p50_latency_us={v}");
+            }
+            if let Some(v) = v.p95_latency_us {
+                println!("p95_latency_us={v}");
+            }
+            if let Some(v) = v.throughput_per_sec {
+                println!("throughput_per_sec={v}");
+            }
+            if let Some(v) = v.queue_depth {
+                println!("queue_depth={v}");
             }
             if let Some(count) = v.stream_fallback_to_pull_count {
                 println!("stream_fallback_to_pull_count={count}");
