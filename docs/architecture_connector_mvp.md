@@ -243,7 +243,8 @@ ABI 互換ポリシー:
 - CI に A-02/A-03/A-04 の最小スモーク（`smoke-isolation`, `smoke-buffer-ref`, `smoke-metrics`）を追加済み。
 - `zl-shm` backend は Unix で `shm_open + mmap`、Windows で `CreateFileMapping/MapViewOfFile` を利用し、利用不可環境では heap fallback を使用。
 - CI に A-01〜A-05 を連続実行する準高負荷スモーク（`smoke-acceptance`）を追加済み。
-- 残タスク: A-01〜A-05 の 10 分級・長時間 soak（nightly 相当）を別ジョブで運用する。
+- CI に `nightly-soak`（schedule / workflow_dispatch）を追加し、A-01〜A-05 を 10 分連続実行する長時間検証を運用開始。
+- 残タスク: nightly soak の閾値管理（throughput / latency / drop の fail gate）を段階導入する。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

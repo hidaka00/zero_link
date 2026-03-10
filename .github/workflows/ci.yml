@@ -6,6 +6,9 @@ on:
       - main
       - master
   pull_request:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
 
 jobs:
   rust-checks:
@@ -179,3 +182,45 @@ jobs:
 
       - name: Smoke control
         run: cargo run -p zl-cli -- smoke-control _sys/control reload '{}'
+
+  nightly-soak:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build soak targets
+        run: cargo build -p connectord -p zl-cli
+
+      - name: Soak A-01..A-05 for 10 minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG_PATH="/tmp/connectord-soak.log"
+          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          sleep 0.4
+          end_ts=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$end_ts" ]; do
+            ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-acceptance audio/asr/text 2 200
+          done
+          ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health
+          kill "$pid"
+          wait "$pid" || true
+
+      - name: Upload soak daemon log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-log-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/connectord-soak.log
+          if-no-files-found: ignore
