@@ -226,6 +226,14 @@ jobs:
             Remove-Item Env:ZL_DAEMON_SUBSCRIBE_MODE -ErrorAction SilentlyContinue
             .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
             if ($LASTEXITCODE -ne 0) { throw "smoke-control failed" }
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\bindings\\build_native.ps1
+            py -3 -m venv .venv-zerolink-win-ci
+            .\\.venv-zerolink-win-ci\\Scripts\\Activate.ps1
+            python -m pip install -e bindings/python
+            $env:ZEROLINK_PY_SMOKE_DAEMON = "1"
+            $env:ZEROLINK_PY_ENDPOINT = "daemon://local"
+            python -m unittest -v bindings/python/tests/test_smoke.py
+            if ($LASTEXITCODE -ne 0) { throw "python daemon smoke failed" }
           } catch {
             Write-Host "Windows daemon smoke failed: $($_.Exception.Message)"
             Show-DaemonLogs
