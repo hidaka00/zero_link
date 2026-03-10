@@ -13,25 +13,35 @@ from zerolink import (
     ZlShmExhaustedError,
     ZlStatus,
     ZlTimeoutError,
+    SCHEMA_UTF8_STRING_V1,
+    string_header,
 )
 
 
 class SmokeTest(unittest.TestCase):
     def test_pubsub_roundtrip_local(self) -> None:
         received = []
+        schema_ids = []
 
-        def on_msg(_topic, _header, payload):
+        def on_msg(_topic, header, payload):
             received.append(payload)
+            schema_ids.append(header.schema_id)
 
         with Client("local") as client:
             client.subscribe("audio/asr/text", on_msg)
-            client.publish("audio/asr/text", b"py-smoke")
+            text = "py-smoke"
+            client.publish(
+                "audio/asr/text",
+                text.encode("utf-8"),
+                header=string_header(text),
+            )
             deadline = time.time() + 2.0
             while time.time() < deadline and not received:
                 time.sleep(0.05)
             client.unsubscribe("audio/asr/text")
 
         self.assertEqual(received, [b"py-smoke"])
+        self.assertEqual(schema_ids, [SCHEMA_UTF8_STRING_V1])
 
     def test_send_control_roundtrip_local(self) -> None:
         received = []
@@ -72,13 +82,20 @@ class SmokeTest(unittest.TestCase):
 
         endpoint = os.getenv("ZEROLINK_PY_ENDPOINT", "daemon://local")
         received = []
+        schema_ids = []
 
-        def on_msg(_topic, _header, payload):
+        def on_msg(_topic, header, payload):
             received.append(payload)
+            schema_ids.append(header.schema_id)
 
         with Client(endpoint) as client:
             client.subscribe("audio/asr/text", on_msg)
-            client.publish("audio/asr/text", b"py-daemon-smoke")
+            text = "py-daemon-smoke"
+            client.publish(
+                "audio/asr/text",
+                text.encode("utf-8"),
+                header=string_header(text),
+            )
             health = client.health()
             deadline = time.time() + 3.0
             while time.time() < deadline and not received:
@@ -86,6 +103,7 @@ class SmokeTest(unittest.TestCase):
             client.unsubscribe("audio/asr/text")
 
         self.assertEqual(received, [b"py-daemon-smoke"])
+        self.assertEqual(schema_ids, [SCHEMA_UTF8_STRING_V1])
         self.assertEqual(health.get("status"), "ok")
         self.assertEqual(health.get("service"), "connectord")
 

@@ -7,6 +7,7 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from ._native import load_library
+from .schemas import SCHEMA_RAW_BYTES_V1
 
 
 class ZlStatus(IntEnum):
@@ -115,7 +116,7 @@ class MsgHeader:
     msg_type: int = 2
     timestamp_ns: int = 0
     size: int = 0
-    schema_id: int = 1
+    schema_id: int = SCHEMA_RAW_BYTES_V1
     trace_id: int = 1
 
 
