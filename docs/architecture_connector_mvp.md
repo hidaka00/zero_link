@@ -200,6 +200,15 @@ ABI 互換ポリシー:
 - M4: `zl-metrics` + `zl-cli` で観測機能追加
 - M5: A-01〜A-05 の統合テスト通過
 
+### 9.1 subscribe 通信モデルの段階方針
+- 現在: daemon 経由 subscribe は pull 型（`subscribe` / `poll` / `unsubscribe`）を採用。
+- 理由: 既存の request/response 制御面を再利用でき、Linux/Windows の同時実装コストを抑えられるため。
+- 残タスク: stream 型 subscribe transport（server push）を実装し、pull 型と一時併存可能にする。
+- stream 型の完了条件:
+  - daemon からの push 受信で callback 配信できる
+  - 切断時の再接続と再購読復元が動作する
+  - Linux/Windows の両方で smoke が通る
+
 ## 10. MVP 固定値（実装開始前に確定）
 
 ### 10.1 シリアライズ方式
