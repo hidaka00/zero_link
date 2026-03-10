@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zl_ipc::{ControlSession, IpcError};
 use zl_proto::{BufferRef, MessageHeader};
 use zl_router::{RoutedMessage, Router, RouterError};
+use zl_shm::{ShmError, ShmManager};
 
 #[repr(C)]
 pub struct ZlClient {
@@ -64,8 +65,7 @@ struct Subscription {
 
 #[derive(Default)]
 struct BufferStore {
-    next_id: u64,
-    slots: HashMap<u64, Box<[u8]>>,
+    shm: ShmManager,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +182,14 @@ fn from_ipc_error(err: IpcError) -> ZlStatus {
     }
 }
 
+fn from_shm_error(err: ShmError) -> ZlStatus {
+    match err {
+        ShmError::ShmExhausted => ZlStatus::ShmExhausted,
+        ShmError::NotFound => ZlStatus::NotFound,
+        ShmError::InvalidArg | ShmError::InvalidRange => ZlStatus::InvalidArg,
+    }
+}
+
 unsafe fn parse_cstr<'a>(ptr: *const c_char) -> Result<&'a str, ZlStatus> {
     if ptr.is_null() {
         return Err(ZlStatus::InvalidArg);
@@ -246,18 +254,10 @@ fn extract_from_buffer_store(
     store: &BufferStore,
     buf_ref: ZlBufferRef,
 ) -> Result<Vec<u8>, ZlStatus> {
-    let Some(slot) = store.slots.get(&buf_ref.buffer_id) else {
-        return Err(ZlStatus::NotFound);
-    };
-
-    let start = buf_ref.offset as usize;
-    let len = buf_ref.length as usize;
-    let end = start.saturating_add(len);
-    if end > slot.len() {
-        return Err(ZlStatus::InvalidArg);
-    }
-
-    Ok(slot[start..end].to_vec())
+    store
+        .shm
+        .read_range(buf_ref.buffer_id, buf_ref.offset, buf_ref.length)
+        .map_err(from_shm_error)
 }
 
 fn encode_control_cbor(command: &str, payload: &[u8]) -> Result<Vec<u8>, ZlStatus> {
@@ -455,8 +455,7 @@ pub unsafe extern "C" fn zl_client_open(
             daemon_endpoint,
             subscriptions: Mutex::new(HashMap::new()),
             buffers: Mutex::new(BufferStore {
-                next_id: 1,
-                slots: HashMap::new(),
+                shm: ShmManager::default(),
             }),
         },
     });
@@ -985,15 +984,11 @@ pub unsafe extern "C" fn zl_alloc_buffer(
         Err(_) => return ZlStatus::Internal,
     };
 
-    let buffer_id = store.next_id;
-    store.next_id = store.next_id.saturating_add(1);
-    if buffer_id == 0 {
-        return ZlStatus::Internal;
-    }
-
-    let mut data = vec![0u8; size as usize].into_boxed_slice();
-    let data_ptr = data.as_mut_ptr() as *mut c_void;
-    store.slots.insert(buffer_id, data);
+    let (buffer_id, data_ptr_u8) = match store.shm.alloc(size) {
+        Ok(v) => v,
+        Err(err) => return from_shm_error(err),
+    };
+    let data_ptr = data_ptr_u8 as *mut c_void;
 
     // Safety: out pointers checked for null above and caller provides writable memory.
     unsafe {
@@ -1024,10 +1019,9 @@ pub unsafe extern "C" fn zl_release_buffer(client: *mut ZlClient, buffer_id: u64
         Err(_) => return ZlStatus::Internal,
     };
 
-    if store.slots.remove(&buffer_id).is_some() {
-        ZlStatus::Ok
-    } else {
-        ZlStatus::NotFound
+    match store.shm.release(buffer_id) {
+        Ok(()) => ZlStatus::Ok,
+        Err(err) => from_shm_error(err),
     }
 }
 

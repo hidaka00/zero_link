@@ -238,7 +238,8 @@ ABI 互換ポリシー:
 - テスト用環境変数フックは debug build のみ有効（release build では無効）。
 - `daemon-health` で publish/poll/stream の集計カウンタと `TopicStats`（`p50/p95 latency`, `throughput_per_sec`, `queue_depth`, `drops`）を取得可能。
 - `throughput_per_sec` は publish の 1 秒窓カウントで算出。
-- 残タスク: M3 (`zl-shm` 実統合) と A-01〜A-05 の統合試験通過。
+- M3 進捗: `zl-ffi` の buffer 実体管理を `zl-shm::ShmManager` に統合済み（hard limit / alloc / release / range read）。
+- 残タスク: OS ネイティブ shared memory backend への置換と A-01〜A-05 の統合試験通過。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

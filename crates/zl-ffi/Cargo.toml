@@ -14,3 +14,4 @@ serde_json = "1"
 zl-proto = { path = "../zl-proto" }
 zl-router = { path = "../zl-router" }
 zl-ipc = { path = "../zl-ipc" }
+zl-shm = { path = "../zl-shm" }
