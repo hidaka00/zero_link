@@ -90,6 +90,13 @@ zl_status_t zl_alloc_buffer(
 
 zl_status_t zl_release_buffer(zl_client_t* client, uint64_t buffer_id);
 
+zl_status_t zl_daemon_health(
+  const char* endpoint,
+  char* out_buf,
+  uint32_t out_buf_len,
+  uint32_t* out_written
+);
+
 zl_status_t zl_send_control(
   zl_client_t* client,
   const char* topic,

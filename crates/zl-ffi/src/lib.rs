@@ -1123,6 +1123,42 @@ pub unsafe extern "C" fn zl_release_buffer(client: *mut ZlClient, buffer_id: u64
 
 #[no_mangle]
 /// # Safety
+/// `endpoint` must point to a valid NUL-terminated UTF-8 string.
+/// `out_buf` must point to writable memory of at least `out_buf_len` bytes.
+/// `out_written` must be a valid writable pointer.
+pub unsafe extern "C" fn zl_daemon_health(
+    endpoint: *const c_char,
+    out_buf: *mut c_char,
+    out_buf_len: u32,
+    out_written: *mut u32,
+) -> ZlStatus {
+    if endpoint.is_null() || out_buf.is_null() || out_written.is_null() || out_buf_len < 2 {
+        return ZlStatus::InvalidArg;
+    }
+
+    let endpoint_str = match unsafe { parse_cstr(endpoint) } {
+        Ok(v) => v,
+        Err(s) => return s,
+    };
+    let mut resp = [0u8; 4096];
+    let len = match daemon_control_request_with_retry(endpoint_str, b"health", &mut resp) {
+        Ok(v) => v,
+        Err(s) => return s,
+    };
+    if len + 1 > out_buf_len as usize {
+        return ZlStatus::BufferFull;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(resp.as_ptr() as *const c_char, out_buf, len);
+        *out_buf.add(len) = 0;
+        *out_written = len as u32;
+    }
+    ZlStatus::Ok
+}
+
+#[no_mangle]
+/// # Safety
 /// `client` and `topic` must satisfy `zl_publish` preconditions. `command` must
 /// point to a valid NUL-terminated UTF-8 string. If `payload_len > 0`, `payload`
 /// must point to readable memory of at least `payload_len` bytes.
@@ -1460,5 +1496,21 @@ mod tests {
         assert!(matches!(st, ZlStatus::Ok));
         let st = unsafe { zl_client_close(client) };
         assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_daemon_health_disconnected_returns_ipc_disconnected() {
+        let endpoint = CString::new("daemon://local").expect("valid cstring");
+        let mut out = [0i8; 256];
+        let mut written = 0u32;
+        let st = unsafe {
+            zl_daemon_health(
+                endpoint.as_ptr(),
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut written as *mut u32,
+            )
+        };
+        assert!(matches!(st, ZlStatus::IpcDisconnected));
     }
 }

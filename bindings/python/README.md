@@ -7,6 +7,8 @@ Minimal Python wrapper over the ZeroLink C ABI.
 - open/close client
 - publish event payload
 - subscribe/unsubscribe with Python callback
+- send control envelope (`send_control`)
+- daemon health query (`health`, daemon endpoint only)
 - status-specific exceptions (`ZlInvalidArgError`, `ZlIpcDisconnectedError`, etc.)
 
 ## Quick start

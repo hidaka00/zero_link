@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Callable
+from typing import Any, Callable
 
 from ._native import load_library
 
@@ -112,6 +113,7 @@ class MsgHeader:
 
 class Client:
     def __init__(self, endpoint: str = "local") -> None:
+        self._endpoint = endpoint
         self._lib = load_library()
         self._configure_signatures()
         self._client = ctypes.POINTER(_ZlClient)()
@@ -172,6 +174,42 @@ class Client:
         self._check(st, "zl_unsubscribe")
         self._callbacks.pop(topic, None)
 
+    def send_control(self, topic: str, command: str, payload: bytes | str = b"{}") -> None:
+        if isinstance(payload, str):
+            payload_bytes = payload.encode("utf-8")
+        else:
+            payload_bytes = payload
+        payload_ptr = (
+            ctypes.c_void_p()
+            if not payload_bytes
+            else ctypes.cast(ctypes.c_char_p(payload_bytes), ctypes.c_void_p)
+        )
+        st = self._lib.zl_send_control(
+            self._client,
+            topic.encode("utf-8"),
+            command.encode("utf-8"),
+            payload_ptr,
+            len(payload_bytes),
+        )
+        self._check(st, "zl_send_control")
+
+    def health(self, endpoint: str | None = None) -> dict[str, Any]:
+        endpoint_value = endpoint or self._endpoint
+        if not endpoint_value.startswith("daemon://"):
+            raise ZlInvalidArgError(int(ZlStatus.INVALID_ARG), "zl_daemon_health")
+
+        out_len = ctypes.c_uint32(0)
+        buf = ctypes.create_string_buffer(4096)
+        st = self._lib.zl_daemon_health(
+            endpoint_value.encode("utf-8"),
+            buf,
+            len(buf),
+            ctypes.byref(out_len),
+        )
+        self._check(st, "zl_daemon_health")
+        raw = bytes(buf[: out_len.value]).decode("utf-8")
+        return json.loads(raw)
+
     def _configure_signatures(self) -> None:
         self._lib.zl_client_open.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.POINTER(_ZlClient))]
         self._lib.zl_client_open.restype = ctypes.c_int32
@@ -199,6 +237,23 @@ class Client:
 
         self._lib.zl_unsubscribe.argtypes = [ctypes.POINTER(_ZlClient), ctypes.c_char_p]
         self._lib.zl_unsubscribe.restype = ctypes.c_int32
+
+        self._lib.zl_send_control.argtypes = [
+            ctypes.POINTER(_ZlClient),
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
+        self._lib.zl_send_control.restype = ctypes.c_int32
+
+        self._lib.zl_daemon_health.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self._lib.zl_daemon_health.restype = ctypes.c_int32
 
     @staticmethod
     def _check(status: int, op: str) -> None:

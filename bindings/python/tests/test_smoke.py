@@ -33,6 +33,23 @@ class SmokeTest(unittest.TestCase):
 
         self.assertEqual(received, [b"py-smoke"])
 
+    def test_send_control_roundtrip_local(self) -> None:
+        received = []
+
+        def on_msg(_topic, _header, payload):
+            received.append(payload)
+
+        with Client("local") as client:
+            client.subscribe("_sys/control", on_msg)
+            client.send_control("_sys/control", "reload", "{}")
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not received:
+                time.sleep(0.05)
+            client.unsubscribe("_sys/control")
+
+        self.assertEqual(len(received), 1)
+        self.assertGreater(len(received[0]), 0)
+
     def test_pubsub_roundtrip_daemon(self) -> None:
         if os.getenv("ZEROLINK_PY_SMOKE_DAEMON", "0") not in {"1", "true", "TRUE"}:
             self.skipTest("set ZEROLINK_PY_SMOKE_DAEMON=1 to enable daemon smoke")
@@ -46,12 +63,20 @@ class SmokeTest(unittest.TestCase):
         with Client(endpoint) as client:
             client.subscribe("audio/asr/text", on_msg)
             client.publish("audio/asr/text", b"py-daemon-smoke")
+            health = client.health()
             deadline = time.time() + 3.0
             while time.time() < deadline and not received:
                 time.sleep(0.05)
             client.unsubscribe("audio/asr/text")
 
         self.assertEqual(received, [b"py-daemon-smoke"])
+        self.assertEqual(health.get("status"), "ok")
+        self.assertEqual(health.get("service"), "connectord")
+
+    def test_health_requires_daemon_endpoint(self) -> None:
+        with Client("local") as client:
+            with self.assertRaises(ZlInvalidArgError):
+                client.health()
 
 
 class ErrorMappingTest(unittest.TestCase):
