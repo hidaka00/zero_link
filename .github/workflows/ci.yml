@@ -300,6 +300,7 @@ jobs:
         run: |
           set -euo pipefail
           LOG_PATH="/tmp/connectord-soak.log"
+          METRICS_PATH="/tmp/connectord-soak-metrics.txt"
           target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 --queue-limit 1000 > "$LOG_PATH" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
@@ -332,6 +333,23 @@ jobs:
             exit 1
           fi
 
+          {
+            echo "dropped_messages=$dropped"
+            echo "p95_latency_us=$p95_us"
+            echo "throughput_per_sec=$throughput"
+            echo "max_dropped_gate=${ZL_SOAK_MAX_DROPPED}"
+            echo "max_p95_gate_us=${ZL_SOAK_MAX_P95_US}"
+            echo "min_throughput_gate=${ZL_SOAK_MIN_THROUGHPUT}"
+          } | tee "$METRICS_PATH"
+
+          {
+            echo "## Nightly soak summary"
+            echo ""
+            echo "- dropped_messages: $dropped (gate <= ${ZL_SOAK_MAX_DROPPED})"
+            echo "- p95_latency_us: $p95_us (gate <= ${ZL_SOAK_MAX_P95_US})"
+            echo "- throughput_per_sec: $throughput (gate >= ${ZL_SOAK_MIN_THROUGHPUT})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           kill "$pid"
           wait "$pid" || true
 
@@ -341,4 +359,12 @@ jobs:
         with:
           name: daemon-log-soak-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/connectord-soak.log
+          if-no-files-found: ignore
+
+      - name: Upload soak metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-metrics-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/connectord-soak-metrics.txt
           if-no-files-found: ignore
