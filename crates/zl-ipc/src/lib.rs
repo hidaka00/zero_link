@@ -115,6 +115,16 @@ pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChann
     Err(IpcError::InvalidEndpoint)
 }
 
+pub fn control_request(
+    endpoint: &str,
+    request: &[u8],
+    response_buf: &mut [u8],
+) -> IpcResult<usize> {
+    let channel = connect_control_channel(endpoint)?;
+    channel.send(request)?;
+    channel.recv(response_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

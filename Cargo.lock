@@ -99,6 +99,7 @@ dependencies = [
  "serde",
  "serde_cbor",
  "zl-ffi",
+ "zl-ipc",
 ]
 
 [[package]]

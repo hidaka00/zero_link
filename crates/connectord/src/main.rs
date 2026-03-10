@@ -61,6 +61,17 @@ fn control_self_check(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn control_response(payload: &[u8]) -> Vec<u8> {
+    if payload == b"connectord:control-ping" {
+        return b"connectord:control-ping".to_vec();
+    }
+    if payload == b"health" {
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\"}"
+            .to_vec();
+    }
+    b"{\"status\":\"error\",\"reason\":\"unknown_command\"}".to_vec()
+}
+
 struct DaemonControlServer {
     stop_tx: mpsc::Sender<()>,
     join: JoinHandle<()>,
@@ -109,10 +120,15 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
                         if stream.read_exact(&mut payload).is_err() {
                             break;
                         }
-                        if stream.write_all(&len_buf).is_err() {
+                        let response = control_response(&payload);
+                        let resp_len = match u32::try_from(response.len()) {
+                            Ok(v) => v,
+                            Err(_) => break,
+                        };
+                        if stream.write_all(&resp_len.to_le_bytes()).is_err() {
                             break;
                         }
-                        if stream.write_all(&payload).is_err() {
+                        if stream.write_all(&response).is_err() {
                             break;
                         }
                         if stream.flush().is_err() {
@@ -256,5 +272,12 @@ mod tests {
     #[test]
     fn control_self_check_loopback_succeeds() {
         assert!(control_self_check("inproc://loopback").is_ok());
+    }
+
+    #[test]
+    fn control_response_health_returns_ok_json() {
+        let got = control_response(b"health");
+        let text = String::from_utf8(got).expect("valid utf8");
+        assert!(text.contains("\"status\":\"ok\""));
     }
 }

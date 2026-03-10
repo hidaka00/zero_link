@@ -37,6 +37,7 @@ fn usage() {
     println!("zl-cli commands:");
     println!("  smoke-pubsub [topic] [message]");
     println!("  smoke-control [topic] [command] [payload]");
+    println!("  daemon-health");
     println!("  env: ZL_ENDPOINT (default: local)");
 }
 
@@ -201,6 +202,20 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
     0
 }
 
+fn daemon_health() -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "daemon://local".to_string());
+    let mut buf = [0u8; 512];
+    let len = match zl_ipc::control_request(&endpoint, b"health", &mut buf) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("daemon health failed: {err:?}");
+            return 1;
+        }
+    };
+    println!("{}", String::from_utf8_lossy(&buf[..len]));
+    0
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -220,6 +235,7 @@ fn main() {
             let payload = args.get(4).map_or("{}", String::as_str);
             smoke_control(topic, command, payload)
         }
+        "daemon-health" => daemon_health(),
         _ => {
             usage();
             2
