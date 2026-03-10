@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use zl_ipc::IpcError;
 use zl_proto::{BufferRef, MessageHeader};
 use zl_router::{RoutedMessage, Router, RouterError};
 
@@ -138,6 +139,13 @@ fn from_router_error(err: RouterError) -> ZlStatus {
     }
 }
 
+fn from_ipc_error(err: IpcError) -> ZlStatus {
+    match err {
+        IpcError::NotImplemented | IpcError::Disconnected => ZlStatus::IpcDisconnected,
+        IpcError::InvalidEndpoint | IpcError::BufferTooSmall => ZlStatus::InvalidArg,
+    }
+}
+
 unsafe fn parse_cstr<'a>(ptr: *const c_char) -> Result<&'a str, ZlStatus> {
     if ptr.is_null() {
         return Err(ZlStatus::InvalidArg);
@@ -262,7 +270,18 @@ pub unsafe extern "C" fn zl_client_open(
     };
 
     if matches!(endpoint_mode, EndpointMode::Daemon) {
-        return ZlStatus::IpcDisconnected;
+        let endpoint_str = if endpoint.is_null() {
+            "daemon://local"
+        } else {
+            // Safety: pointer validated and parsed above.
+            match unsafe { parse_cstr(endpoint) } {
+                Ok(v) => v,
+                Err(s) => return s,
+            }
+        };
+        if let Err(err) = zl_ipc::connect_control_channel(endpoint_str) {
+            return from_ipc_error(err);
+        }
     }
 
     let client = Box::new(ZlClient {

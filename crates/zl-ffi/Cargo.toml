@@ -12,3 +12,4 @@ serde = { version = "1", features = ["derive"] }
 serde_cbor = "0.11"
 zl-proto = { path = "../zl-proto" }
 zl-router = { path = "../zl-router" }
+zl-ipc = { path = "../zl-ipc" }
