@@ -32,10 +32,9 @@ pub fn validate_topic(topic: &str) -> Result<(), RouterError> {
         return Err(RouterError::InvalidTopic);
     }
 
-    if !topic
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'/' | b'-'))
-    {
+    if !topic.bytes().all(|b| {
+        b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'/' | b'-')
+    }) {
         return Err(RouterError::InvalidTopic);
     }
 
@@ -103,7 +102,9 @@ mod tests {
     #[test]
     fn router_delivers_published_message_to_subscriber() {
         let router = Router::new();
-        let rx = router.subscribe("audio/asr/text").expect("subscribe should succeed");
+        let rx = router
+            .subscribe("audio/asr/text")
+            .expect("subscribe should succeed");
         let sent = RoutedMessage {
             header: MessageHeader {
                 msg_type: 2,

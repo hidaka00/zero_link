@@ -41,7 +41,7 @@ fn usage() {
 
 fn open_client(endpoint: &CString) -> Result<*mut ZlClient, ZlStatus> {
     let mut client: *mut ZlClient = std::ptr::null_mut();
-    let st = zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient);
+    let st = unsafe { zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient) };
     if matches!(st, ZlStatus::Ok) {
         Ok(client)
     } else {
@@ -69,10 +69,10 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
-    let st = zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data);
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data) };
     if !matches!(st, ZlStatus::Ok) {
         eprintln!("zl_subscribe failed");
-        let _ = zl_client_close(client);
+        let _ = unsafe { zl_client_close(client) };
         return 1;
     }
 
@@ -84,18 +84,20 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         schema_id: 1,
         trace_id: 1,
     };
-    let st = zl_publish(
-        client,
-        topic_c.as_ptr(),
-        &header as *const ZlMsgHeader,
-        bytes.as_ptr() as *const c_void,
-        bytes.len() as u32,
-        std::ptr::null(),
-    );
+    let st = unsafe {
+        zl_publish(
+            client,
+            topic_c.as_ptr(),
+            &header as *const ZlMsgHeader,
+            bytes.as_ptr() as *const c_void,
+            bytes.len() as u32,
+            std::ptr::null(),
+        )
+    };
     if !matches!(st, ZlStatus::Ok) {
         eprintln!("zl_publish failed");
-        let _ = zl_unsubscribe(client, topic_c.as_ptr());
-        let _ = zl_client_close(client);
+        let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(client) };
         return 1;
     }
 
@@ -103,14 +105,14 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         Ok(got) => println!("received: {}", String::from_utf8_lossy(&got)),
         Err(_) => {
             eprintln!("timeout waiting callback");
-            let _ = zl_unsubscribe(client, topic_c.as_ptr());
-            let _ = zl_client_close(client);
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
             return 1;
         }
     }
 
-    let _ = zl_unsubscribe(client, topic_c.as_ptr());
-    let _ = zl_client_close(client);
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
     0
 }
 
@@ -141,25 +143,27 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
-    let st = zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data);
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data) };
     if !matches!(st, ZlStatus::Ok) {
         eprintln!("zl_subscribe failed");
-        let _ = zl_client_close(client);
+        let _ = unsafe { zl_client_close(client) };
         return 1;
     }
 
     let payload_bytes = payload.as_bytes();
-    let st = zl_send_control(
-        client,
-        topic_c.as_ptr(),
-        command_c.as_ptr(),
-        payload_bytes.as_ptr() as *const c_void,
-        payload_bytes.len() as u32,
-    );
+    let st = unsafe {
+        zl_send_control(
+            client,
+            topic_c.as_ptr(),
+            command_c.as_ptr(),
+            payload_bytes.as_ptr() as *const c_void,
+            payload_bytes.len() as u32,
+        )
+    };
     if !matches!(st, ZlStatus::Ok) {
         eprintln!("zl_send_control failed");
-        let _ = zl_unsubscribe(client, topic_c.as_ptr());
-        let _ = zl_client_close(client);
+        let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(client) };
         return 1;
     }
 
@@ -167,25 +171,28 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
         Ok(got) => match serde_cbor::from_slice::<ControlEnvelope>(&got) {
             Ok(decoded) => {
                 println!("control.command={}", decoded.command);
-                println!("control.payload={}", String::from_utf8_lossy(&decoded.payload));
+                println!(
+                    "control.payload={}",
+                    String::from_utf8_lossy(&decoded.payload)
+                );
             }
             Err(err) => {
                 eprintln!("cbor decode failed: {err}");
-                let _ = zl_unsubscribe(client, topic_c.as_ptr());
-                let _ = zl_client_close(client);
+                let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+                let _ = unsafe { zl_client_close(client) };
                 return 1;
             }
         },
         Err(_) => {
             eprintln!("timeout waiting callback");
-            let _ = zl_unsubscribe(client, topic_c.as_ptr());
-            let _ = zl_client_close(client);
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
             return 1;
         }
     }
 
-    let _ = zl_unsubscribe(client, topic_c.as_ptr());
-    let _ = zl_client_close(client);
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
     0
 }
 
