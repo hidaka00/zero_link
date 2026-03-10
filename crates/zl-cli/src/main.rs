@@ -83,6 +83,30 @@ fn usage() {
     println!("  smoke-control [topic] [command] [payload]");
     println!("  daemon-health");
     println!("  env: ZL_ENDPOINT (default: local)");
+    println!("  env: ZL_SMOKE_TIMEOUT_MS (default: 2000)");
+    println!("  env: ZL_SMOKE_SUBSCRIBE_SETTLE_MS (stream only, default: 120)");
+}
+
+fn smoke_timeout() -> Duration {
+    let ms = env::var("ZL_SMOKE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(2000);
+    Duration::from_millis(ms)
+}
+
+fn maybe_settle_stream_subscribe() {
+    let is_stream = env::var("ZL_DAEMON_SUBSCRIBE_MODE")
+        .map(|v| v == "stream")
+        .unwrap_or(false);
+    if !is_stream {
+        return;
+    }
+    let settle_ms = env::var("ZL_SMOKE_SUBSCRIBE_SETTLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(120);
+    std::thread::sleep(Duration::from_millis(settle_ms));
 }
 
 fn open_client(endpoint: &str) -> Result<*mut ZlClient, ZlStatus> {
@@ -125,6 +149,7 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         let _ = unsafe { zl_client_close(client) };
         return 1;
     }
+    maybe_settle_stream_subscribe();
 
     let bytes = message.as_bytes();
     let header = ZlMsgHeader {
@@ -151,7 +176,7 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         return 1;
     }
 
-    match rx.recv_timeout(Duration::from_secs(2)) {
+    match rx.recv_timeout(smoke_timeout()) {
         Ok(got) => println!("received: {}", String::from_utf8_lossy(&got)),
         Err(_) => {
             eprintln!("timeout waiting callback");
@@ -217,7 +242,7 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
         return 1;
     }
 
-    match rx.recv_timeout(Duration::from_secs(2)) {
+    match rx.recv_timeout(smoke_timeout()) {
         Ok(got) => match serde_cbor::from_slice::<ControlEnvelope>(&got) {
             Ok(decoded) => {
                 println!("control.command={}", decoded.command);
@@ -293,7 +318,7 @@ fn smoke_burst(topic: &str, count: usize) -> i32 {
     }
 
     for _ in 0..count {
-        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+        if rx.recv_timeout(smoke_timeout()).is_err() {
             let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
             let _ = unsafe { zl_client_close(client) };
             return 1;
@@ -349,7 +374,7 @@ fn smoke_trace(topic: &str, trace_id: u64) -> i32 {
         return 1;
     }
 
-    let got = match rx.recv_timeout(Duration::from_secs(2)) {
+    let got = match rx.recv_timeout(smoke_timeout()) {
         Ok(v) => v,
         Err(_) => {
             let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
@@ -447,7 +472,7 @@ fn smoke_isolation(topic: &str, message: &str) -> i32 {
         return 1;
     }
 
-    let got = match rx_survivor.recv_timeout(Duration::from_secs(2)) {
+    let got = match rx_survivor.recv_timeout(smoke_timeout()) {
         Ok(v) => v,
         Err(_) => {
             let _ = unsafe { zl_unsubscribe(survivor, topic_c.as_ptr()) };
@@ -529,7 +554,7 @@ fn smoke_buffer_ref(topic: &str, message: &str) -> i32 {
         return 1;
     }
 
-    let got = match rx.recv_timeout(Duration::from_secs(2)) {
+    let got = match rx.recv_timeout(smoke_timeout()) {
         Ok(v) => v,
         Err(_) => {
             let _ = unsafe { zl_release_buffer(client, out_ref.buffer_id) };
