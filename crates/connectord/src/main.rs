@@ -69,6 +69,13 @@ fn control_response(payload: &[u8]) -> Vec<u8> {
         return b"{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\"}"
             .to_vec();
     }
+    if payload.starts_with(b"control:") {
+        let body_len = payload.len().saturating_sub("control:".len());
+        return format!(
+            "{{\"status\":\"ok\",\"service\":\"connectord\",\"accepted_control_bytes\":{body_len}}}"
+        )
+        .into_bytes();
+    }
     b"{\"status\":\"error\",\"reason\":\"unknown_command\"}".to_vec()
 }
 
@@ -279,5 +286,12 @@ mod tests {
         let got = control_response(b"health");
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"status\":\"ok\""));
+    }
+
+    #[test]
+    fn control_response_accepts_control_prefix() {
+        let got = control_response(b"control:\x01\x02");
+        let text = String::from_utf8(got).expect("valid utf8");
+        assert!(text.contains("\"accepted_control_bytes\":2"));
     }
 }

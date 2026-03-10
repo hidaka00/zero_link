@@ -18,6 +18,7 @@ pub struct ZlClient {
 
 struct Client {
     transport: ClientTransport,
+    daemon_endpoint: Option<String>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
     buffers: Mutex<BufferStore>,
 }
@@ -241,6 +242,13 @@ fn parse_endpoint_mode(endpoint: Option<&str>) -> Result<EndpointMode, ZlStatus>
     }
 }
 
+fn control_request_body(payload: &[u8]) -> Vec<u8> {
+    let mut req = Vec::with_capacity("control:".len() + payload.len());
+    req.extend_from_slice(b"control:");
+    req.extend_from_slice(payload);
+    req
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
@@ -254,32 +262,28 @@ pub unsafe extern "C" fn zl_client_open(
         return ZlStatus::InvalidArg;
     }
 
-    let endpoint_mode = if endpoint.is_null() {
-        EndpointMode::InMemory
+    let endpoint_str = if endpoint.is_null() {
+        None
     } else {
         // Safety: pointer is provided by caller and checked for null above.
-        let parsed = unsafe { parse_cstr(endpoint) };
-        let endpoint_str = match parsed {
-            Ok(v) => v,
-            Err(s) => return s,
-        };
-        match parse_endpoint_mode(Some(endpoint_str)) {
-            Ok(mode) => mode,
+        match unsafe { parse_cstr(endpoint) } {
+            Ok(v) => Some(v),
             Err(s) => return s,
         }
     };
+    let endpoint_mode = match parse_endpoint_mode(endpoint_str) {
+        Ok(v) => v,
+        Err(s) => return s,
+    };
+    let daemon_endpoint = endpoint_str
+        .filter(|v| v.starts_with("daemon://"))
+        .map(ToString::to_string);
 
     if matches!(endpoint_mode, EndpointMode::Daemon) {
-        let endpoint_str = if endpoint.is_null() {
-            "daemon://local"
-        } else {
-            // Safety: pointer validated and parsed above.
-            match unsafe { parse_cstr(endpoint) } {
-                Ok(v) => v,
-                Err(s) => return s,
-            }
+        let Some(endpoint_str) = daemon_endpoint.as_deref() else {
+            return ZlStatus::InvalidArg;
         };
-        if let Err(err) = zl_ipc::connect_control_channel(endpoint_str) {
+        if let Err(err) = zl_ipc::control_request(endpoint_str, b"health", &mut [0u8; 256]) {
             return from_ipc_error(err);
         }
     }
@@ -287,6 +291,7 @@ pub unsafe extern "C" fn zl_client_open(
     let client = Box::new(ZlClient {
         inner: Client {
             transport: ClientTransport::in_memory(),
+            daemon_endpoint,
             subscriptions: Mutex::new(HashMap::new()),
             buffers: Mutex::new(BufferStore {
                 next_id: 1,
@@ -602,6 +607,15 @@ pub unsafe extern "C" fn zl_send_control(
         Ok(v) => v,
         Err(s) => return s,
     };
+
+    // If client was opened against a daemon endpoint, mirror control to daemon.
+    let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
+    if let Some(endpoint) = daemon_endpoint.as_deref() {
+        let req = control_request_body(&body);
+        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 512]) {
+            return from_ipc_error(err);
+        }
+    }
 
     let header = ZlMsgHeader {
         msg_type: 3,
