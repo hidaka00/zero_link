@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import ctypes
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Callable
+
+from ._native import load_library
+
+
+class ZlStatus(IntEnum):
+    OK = 0
+    INVALID_ARG = 1
+    TIMEOUT = 2
+    NOT_FOUND = 3
+    BUFFER_FULL = 4
+    SHM_EXHAUSTED = 5
+    IPC_DISCONNECTED = 6
+    INTERNAL = 255
+
+
+class ZlError(RuntimeError):
+    def __init__(self, code: int, op: str) -> None:
+        super().__init__(f"{op} failed: {ZlStatus(code).name if code in ZlStatus._value2member_map_ else code}")
+        self.code = code
+        self.op = op
+
+
+class _ZlClient(ctypes.Structure):
+    pass
+
+
+class _ZlMsgHeader(ctypes.Structure):
+    _fields_ = [
+        ("msg_type", ctypes.c_uint32),
+        ("timestamp_ns", ctypes.c_uint64),
+        ("size", ctypes.c_uint32),
+        ("schema_id", ctypes.c_uint32),
+        ("trace_id", ctypes.c_uint64),
+    ]
+
+
+class _ZlBufferRef(ctypes.Structure):
+    _fields_ = [
+        ("buffer_id", ctypes.c_uint64),
+        ("offset", ctypes.c_uint32),
+        ("length", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+    ]
+
+
+CallbackFn = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_char_p,
+    ctypes.POINTER(_ZlMsgHeader),
+    ctypes.c_void_p,
+    ctypes.POINTER(_ZlBufferRef),
+    ctypes.c_void_p,
+)
+
+
+@dataclass
+class MsgHeader:
+    msg_type: int = 2
+    timestamp_ns: int = 0
+    size: int = 0
+    schema_id: int = 1
+    trace_id: int = 1
+
+
+class Client:
+    def __init__(self, endpoint: str = "local") -> None:
+        self._lib = load_library()
+        self._configure_signatures()
+        self._client = ctypes.POINTER(_ZlClient)()
+        self._callbacks: dict[str, CallbackFn] = {}
+
+        st = self._lib.zl_client_open(endpoint.encode("utf-8"), ctypes.byref(self._client))
+        self._check(st, "zl_client_open")
+
+    def close(self) -> None:
+        if bool(self._client):
+            st = self._lib.zl_client_close(self._client)
+            self._check(st, "zl_client_close")
+            self._client = ctypes.POINTER(_ZlClient)()
+
+    def publish(self, topic: str, payload: bytes, header: MsgHeader | None = None) -> None:
+        h = header or MsgHeader(size=len(payload))
+        h.size = len(payload)
+        hdr = _ZlMsgHeader(
+            msg_type=h.msg_type,
+            timestamp_ns=h.timestamp_ns,
+            size=h.size,
+            schema_id=h.schema_id,
+            trace_id=h.trace_id,
+        )
+        ptr = ctypes.c_char_p(payload)
+        st = self._lib.zl_publish(
+            self._client,
+            topic.encode("utf-8"),
+            ctypes.byref(hdr),
+            ctypes.cast(ptr, ctypes.c_void_p),
+            len(payload),
+            None,
+        )
+        self._check(st, "zl_publish")
+
+    def subscribe(self, topic: str, callback: Callable[[str, MsgHeader, bytes], None]) -> None:
+        def _cb(topic_ptr, header_ptr, payload_ptr, _buf_ref_ptr, _user_data):
+            topic_s = ctypes.cast(topic_ptr, ctypes.c_char_p).value.decode("utf-8")
+            header = MsgHeader(
+                msg_type=header_ptr.contents.msg_type,
+                timestamp_ns=header_ptr.contents.timestamp_ns,
+                size=header_ptr.contents.size,
+                schema_id=header_ptr.contents.schema_id,
+                trace_id=header_ptr.contents.trace_id,
+            )
+            data = b""
+            if payload_ptr and header.size > 0:
+                data = ctypes.string_at(payload_ptr, header.size)
+            callback(topic_s, header, data)
+
+        cb = CallbackFn(_cb)
+        self._callbacks[topic] = cb
+        st = self._lib.zl_subscribe(self._client, topic.encode("utf-8"), cb, None)
+        self._check(st, "zl_subscribe")
+
+    def unsubscribe(self, topic: str) -> None:
+        st = self._lib.zl_unsubscribe(self._client, topic.encode("utf-8"))
+        self._check(st, "zl_unsubscribe")
+        self._callbacks.pop(topic, None)
+
+    def _configure_signatures(self) -> None:
+        self._lib.zl_client_open.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.POINTER(_ZlClient))]
+        self._lib.zl_client_open.restype = ctypes.c_int32
+
+        self._lib.zl_client_close.argtypes = [ctypes.POINTER(_ZlClient)]
+        self._lib.zl_client_close.restype = ctypes.c_int32
+
+        self._lib.zl_publish.argtypes = [
+            ctypes.POINTER(_ZlClient),
+            ctypes.c_char_p,
+            ctypes.POINTER(_ZlMsgHeader),
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(_ZlBufferRef),
+        ]
+        self._lib.zl_publish.restype = ctypes.c_int32
+
+        self._lib.zl_subscribe.argtypes = [
+            ctypes.POINTER(_ZlClient),
+            ctypes.c_char_p,
+            CallbackFn,
+            ctypes.c_void_p,
+        ]
+        self._lib.zl_subscribe.restype = ctypes.c_int32
+
+        self._lib.zl_unsubscribe.argtypes = [ctypes.POINTER(_ZlClient), ctypes.c_char_p]
+        self._lib.zl_unsubscribe.restype = ctypes.c_int32
+
+    @staticmethod
+    def _check(status: int, op: str) -> None:
+        if status != ZlStatus.OK:
+            raise ZlError(status, op)
+
+    def __enter__(self) -> "Client":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()

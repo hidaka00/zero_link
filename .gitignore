@@ -1,2 +1,5 @@
 /target/
 **/*.rs.bk
+/bindings/python/src/zerolink/native/*.so
+/bindings/python/src/zerolink/native/*.dylib
+/bindings/python/src/zerolink/native/*.dll
