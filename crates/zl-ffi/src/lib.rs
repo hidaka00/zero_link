@@ -73,6 +73,22 @@ struct ControlEnvelope {
     payload: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishMirrorEnvelope {
+    topic: String,
+    header: PublishMirrorHeader,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishMirrorHeader {
+    msg_type: u32,
+    timestamp_ns: u64,
+    size: u32,
+    schema_id: u32,
+    trace_id: u64,
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if let Ok(mut subs) = self.subscriptions.lock() {
@@ -249,6 +265,29 @@ fn control_request_body(payload: &[u8]) -> Vec<u8> {
     req
 }
 
+fn publish_request_body(
+    topic: &str,
+    header: ZlMsgHeader,
+    payload: &[u8],
+) -> Result<Vec<u8>, ZlStatus> {
+    let envelope = PublishMirrorEnvelope {
+        topic: topic.to_string(),
+        header: PublishMirrorHeader {
+            msg_type: header.msg_type,
+            timestamp_ns: header.timestamp_ns,
+            size: header.size,
+            schema_id: header.schema_id,
+            trace_id: header.trace_id,
+        },
+        payload: payload.to_vec(),
+    };
+    let body = serde_cbor::to_vec(&envelope).map_err(|_| ZlStatus::Internal)?;
+    let mut req = Vec::with_capacity("publish:".len() + body.len());
+    req.extend_from_slice(b"publish:");
+    req.extend_from_slice(&body);
+    Ok(req)
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
@@ -382,6 +421,18 @@ pub unsafe extern "C" fn zl_publish(
         payload: payload_vec,
         buffer_ref: buf_ref_rs,
     };
+
+    // If client was opened against a daemon endpoint, mirror publish to daemon.
+    let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
+    if let Some(endpoint) = daemon_endpoint.as_deref() {
+        let req = match publish_request_body(topic_str, header_to_ffi(header_rs), &msg.payload) {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 1024]) {
+            return from_ipc_error(err);
+        }
+    }
 
     // Safety: client pointer checked for null and only immutably accessed.
     let transport = unsafe { &(*client).inner.transport };

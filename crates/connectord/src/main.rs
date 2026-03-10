@@ -91,6 +91,13 @@ fn control_response(payload: &[u8]) -> Vec<u8> {
         )
         .into_bytes();
     }
+    if payload.starts_with(b"publish:") {
+        let body_len = payload.len().saturating_sub("publish:".len());
+        return format!(
+            "{{\"status\":\"ok\",\"service\":\"connectord\",\"accepted_publish_bytes\":{body_len}}}"
+        )
+        .into_bytes();
+    }
     b"{\"status\":\"error\",\"reason\":\"unknown_command\"}".to_vec()
 }
 
@@ -452,5 +459,12 @@ mod tests {
         let got = control_response(b"control:\x01\x02");
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"accepted_control_bytes\":2"));
+    }
+
+    #[test]
+    fn control_response_accepts_publish_prefix() {
+        let got = control_response(b"publish:\x01\x02\x03");
+        let text = String::from_utf8(got).expect("valid utf8");
+        assert!(text.contains("\"accepted_publish_bytes\":3"));
     }
 }
