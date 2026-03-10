@@ -56,7 +56,7 @@ jobs:
           export ZL_SMOKE_ACCEPTANCE_RETRY_BACKOFF_MS=250
           cargo build -p connectord -p zl-cli
           LOG_PATH="/tmp/connectord-daemon.log"
-          ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1 target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
+          ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1 target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 --queue-limit 1000 > "$LOG_PATH" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           sleep 0.4
@@ -112,7 +112,7 @@ jobs:
           $stderrLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stderr.log"
           $savedDisconnectFlag = $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE
           $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE = "1"
-          $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50") -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+          $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50","--queue-limit","1000") -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
           if ($null -eq $savedDisconnectFlag) {
             Remove-Item Env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE -ErrorAction SilentlyContinue
           } else {
@@ -271,7 +271,7 @@ jobs:
         run: |
           set -euo pipefail
           LOG_PATH="/tmp/connectord-soak.log"
-          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
+          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 --queue-limit 1000 > "$LOG_PATH" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           sleep 0.4
