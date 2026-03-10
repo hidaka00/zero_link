@@ -209,6 +209,21 @@ ABI 互換ポリシー:
   - 切断時の再接続と再購読復元が動作する
   - Linux/Windows の両方で smoke が通る
 
+### 9.2 stream 型プロトコル草案（follow-up）
+- 接続モデル: `daemon://local` で長寿命チャネルを確立し、購読単位ではなく接続単位で push を受ける。
+- 最小フレーム:
+  - `subscribe_open`（topic, subscription_id）
+  - `message`（subscription_id, header, payload_or_buf_ref）
+  - `ack`（subscription_id, seq）
+  - `heartbeat`（keepalive）
+  - `unsubscribe_close`（subscription_id）
+- 互換方針:
+  - pull 型（`subscribe/poll/unsubscribe`）は当面維持し、feature flag で stream 型と切替可能にする。
+  - stream 障害時は pull 型へフォールバック可能な実装を優先する。
+- 失敗時動作:
+  - 接続断時は指数バックオフで再接続し、再接続成功後に active subscription を再送する。
+  - 再送境界は `seq` と `trace_id` で判定し、重複配信はクライアント側で best effort 抑止する。
+
 ## 10. MVP 固定値（実装開始前に確定）
 
 ### 10.1 シリアライズ方式

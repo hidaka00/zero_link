@@ -48,7 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p connectord -p zl-cli
-          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > /tmp/connectord-daemon.log 2>&1 &
+          LOG_PATH="/tmp/connectord-daemon.log"
+          target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 > "$LOG_PATH" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           sleep 0.4
@@ -58,17 +59,38 @@ jobs:
           kill "$pid"
           wait "$pid" || true
 
+      - name: Upload daemon log (Linux)
+        if: failure() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-log-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/connectord-daemon.log
+          if-no-files-found: ignore
+
       - name: Daemon health smoke (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           cargo build -p connectord -p zl-cli
-          $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50") -PassThru
+          $stdoutLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stdout.log"
+          $stderrLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stderr.log"
+          $proc = Start-Process -FilePath ".\\target\\debug\\connectord.exe" -ArgumentList @("serve","--control-endpoint","daemon://local","--tick-ms","50") -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
           try {
-            Start-Sleep -Milliseconds 800
             $env:ZL_ENDPOINT = "daemon://local"
-            .\\target\\debug\\zl-cli.exe daemon-health
+            $ok = $false
+            for ($i = 0; $i -lt 10; $i++) {
+              try {
+                .\\target\\debug\\zl-cli.exe daemon-health
+                $ok = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 300
+              }
+            }
+            if (-not $ok) {
+              throw "daemon-health failed after retries"
+            }
             .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win
             .\\target\\debug\\zl-cli.exe smoke-control _sys/control reload "{}"
           } finally {
@@ -76,6 +98,16 @@ jobs:
               Stop-Process -Id $proc.Id -Force
             }
           }
+
+      - name: Upload daemon log (Windows)
+        if: failure() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-log-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\connectord-daemon-windows.stdout.log
+            ${{ runner.temp }}\connectord-daemon-windows.stderr.log
+          if-no-files-found: ignore
 
       - name: Smoke pubsub
         run: cargo run -p zl-cli -- smoke-pubsub audio/asr/text ci-smoke
