@@ -89,6 +89,15 @@ struct PublishMirrorHeader {
     trace_id: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DaemonPollResponse {
+    Empty,
+    Message {
+        header: PublishMirrorHeader,
+        payload: Vec<u8>,
+    },
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if let Ok(mut subs) = self.subscriptions.lock() {
@@ -288,6 +297,27 @@ fn publish_request_body(
     Ok(req)
 }
 
+fn subscribe_request_body(topic: &str) -> Vec<u8> {
+    let mut req = Vec::with_capacity("subscribe:".len() + topic.len());
+    req.extend_from_slice(b"subscribe:");
+    req.extend_from_slice(topic.as_bytes());
+    req
+}
+
+fn unsubscribe_request_body(topic: &str) -> Vec<u8> {
+    let mut req = Vec::with_capacity("unsubscribe:".len() + topic.len());
+    req.extend_from_slice(b"unsubscribe:");
+    req.extend_from_slice(topic.as_bytes());
+    req
+}
+
+fn poll_request_body(topic: &str) -> Vec<u8> {
+    let mut req = Vec::with_capacity("poll:".len() + topic.len());
+    req.extend_from_slice(b"poll:");
+    req.extend_from_slice(topic.as_bytes());
+    req
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
@@ -463,13 +493,8 @@ pub unsafe extern "C" fn zl_subscribe(
         Ok(v) => v.to_string(),
         Err(s) => return s,
     };
-
     // Safety: client pointer checked for null and only immutably accessed.
-    let transport = unsafe { &(*client).inner.transport };
-    let rx = match transport.subscribe(&topic_str) {
-        Ok(rx) => rx,
-        Err(e) => return from_router_error(e),
-    };
+    let daemon_endpoint = unsafe { (*client).inner.daemon_endpoint.clone() };
 
     let topic_c = match CString::new(topic_str.clone()) {
         Ok(v) => v,
@@ -479,39 +504,92 @@ pub unsafe extern "C" fn zl_subscribe(
     let callback = cb.expect("checked above");
     let user_data_addr = user_data as usize;
     let (stop_tx, stop_rx) = mpsc::channel();
-    let join = thread::spawn(move || loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
+    let join = if let Some(endpoint) = daemon_endpoint {
+        let sub_req = subscribe_request_body(&topic_str);
+        if let Err(err) = zl_ipc::control_request(&endpoint, &sub_req, &mut [0u8; 512]) {
+            return from_ipc_error(err);
         }
-
-        match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(msg) => {
-                let header = header_to_ffi(msg.header);
-                let header_ptr = &header as *const ZlMsgHeader;
-                let payload_ptr = if msg.payload.is_empty() {
-                    std::ptr::null()
-                } else {
-                    msg.payload.as_ptr() as *const c_void
-                };
-                let payload_len = msg.payload.len();
-                let buf = msg.buffer_ref.map(buf_to_ffi);
-                let buf_ptr = buf
-                    .as_ref()
-                    .map_or(std::ptr::null(), |b| b as *const ZlBufferRef);
-
-                let _ = payload_len;
-                callback(
-                    topic_c.as_ptr(),
-                    header_ptr,
-                    payload_ptr,
-                    buf_ptr,
-                    user_data_addr as *mut c_void,
-                );
+        let poll_req = poll_request_body(&topic_str);
+        thread::spawn(move || loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    });
+            let mut resp = [0u8; 4096];
+            match zl_ipc::control_request(&endpoint, &poll_req, &mut resp) {
+                Ok(len) => {
+                    if let Ok(DaemonPollResponse::Message { header, payload }) =
+                        serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
+                    {
+                        let header_ffi = ZlMsgHeader {
+                            msg_type: header.msg_type,
+                            timestamp_ns: header.timestamp_ns,
+                            size: header.size,
+                            schema_id: header.schema_id,
+                            trace_id: header.trace_id,
+                        };
+                        let header_ptr = &header_ffi as *const ZlMsgHeader;
+                        let payload_ptr = if payload.is_empty() {
+                            std::ptr::null()
+                        } else {
+                            payload.as_ptr() as *const c_void
+                        };
+                        callback(
+                            topic_c.as_ptr(),
+                            header_ptr,
+                            payload_ptr,
+                            std::ptr::null(),
+                            user_data_addr as *mut c_void,
+                        );
+                    }
+                }
+                Err(IpcError::Disconnected) => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        })
+    } else {
+        // Safety: client pointer checked for null and only immutably accessed.
+        let transport = unsafe { &(*client).inner.transport };
+        let rx = match transport.subscribe(&topic_str) {
+            Ok(rx) => rx,
+            Err(e) => return from_router_error(e),
+        };
+        thread::spawn(move || loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(msg) => {
+                    let header = header_to_ffi(msg.header);
+                    let header_ptr = &header as *const ZlMsgHeader;
+                    let payload_ptr = if msg.payload.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        msg.payload.as_ptr() as *const c_void
+                    };
+                    let buf = msg.buffer_ref.map(buf_to_ffi);
+                    let buf_ptr = buf
+                        .as_ref()
+                        .map_or(std::ptr::null(), |b| b as *const ZlBufferRef);
+
+                    callback(
+                        topic_c.as_ptr(),
+                        header_ptr,
+                        payload_ptr,
+                        buf_ptr,
+                        user_data_addr as *mut c_void,
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        })
+    };
 
     // Safety: client pointer checked for null.
     let subscriptions = unsafe { &(*client).inner.subscriptions };
@@ -543,6 +621,14 @@ pub unsafe extern "C" fn zl_unsubscribe(client: *mut ZlClient, topic: *const c_c
         Ok(v) => v,
         Err(s) => return s,
     };
+    // Safety: client pointer checked for null and only immutably accessed.
+    let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
+    if let Some(endpoint) = daemon_endpoint.as_deref() {
+        let req = unsubscribe_request_body(topic_str);
+        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 512]) {
+            return from_ipc_error(err);
+        }
+    }
 
     // Safety: client pointer checked for null.
     let subscriptions = unsafe { &(*client).inner.subscriptions };

@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::env;
 #[cfg(windows)]
 use std::ffi::c_void;
@@ -21,6 +23,36 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use zl_ipc::{connect_control_channel, daemon_transport_target};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishMirrorEnvelope {
+    topic: String,
+    header: PublishMirrorHeader,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublishMirrorHeader {
+    msg_type: u32,
+    timestamp_ns: u64,
+    size: u32,
+    schema_id: u32,
+    trace_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DaemonPollResponse {
+    Empty,
+    Message {
+        header: PublishMirrorHeader,
+        payload: Vec<u8>,
+    },
+}
+
+#[derive(Default)]
+struct DaemonState {
+    queues: HashMap<String, VecDeque<PublishMirrorEnvelope>>,
+}
 
 fn usage() {
     println!("connectord commands:");
@@ -76,13 +108,43 @@ fn control_self_check(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn control_response(payload: &[u8]) -> Vec<u8> {
+fn topic_from_prefixed<'a>(payload: &'a [u8], prefix: &[u8]) -> Option<&'a str> {
+    let bytes = payload.strip_prefix(prefix)?;
+    let topic = std::str::from_utf8(bytes).ok()?;
+    if topic.is_empty() {
+        return None;
+    }
+    Some(topic)
+}
+
+fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
     if payload == b"connectord:control-ping" {
         return b"connectord:control-ping".to_vec();
     }
     if payload == b"health" {
         return b"{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\"}"
             .to_vec();
+    }
+    if let Some(topic) = topic_from_prefixed(payload, b"subscribe:") {
+        state.queues.entry(topic.to_string()).or_default();
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"subscribed\":true}".to_vec();
+    }
+    if let Some(topic) = topic_from_prefixed(payload, b"unsubscribe:") {
+        state.queues.remove(topic);
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"unsubscribed\":true}".to_vec();
+    }
+    if let Some(topic) = topic_from_prefixed(payload, b"poll:") {
+        let maybe = state.queues.get_mut(topic).and_then(|q| q.pop_front());
+        let resp = match maybe {
+            Some(msg) => DaemonPollResponse::Message {
+                header: msg.header,
+                payload: msg.payload,
+            },
+            None => DaemonPollResponse::Empty,
+        };
+        return serde_cbor::to_vec(&resp).unwrap_or_else(|_| {
+            b"{\"status\":\"error\",\"reason\":\"poll_encode_failed\"}".to_vec()
+        });
     }
     if payload.starts_with(b"control:") {
         let body_len = payload.len().saturating_sub("control:".len());
@@ -92,7 +154,15 @@ fn control_response(payload: &[u8]) -> Vec<u8> {
         .into_bytes();
     }
     if payload.starts_with(b"publish:") {
-        let body_len = payload.len().saturating_sub("publish:".len());
+        let body = &payload["publish:".len()..];
+        if let Ok(msg) = serde_cbor::from_slice::<PublishMirrorEnvelope>(body) {
+            state
+                .queues
+                .entry(msg.topic.clone())
+                .or_default()
+                .push_back(msg);
+        }
+        let body_len = body.len();
         return format!(
             "{{\"status\":\"ok\",\"service\":\"connectord\",\"accepted_publish_bytes\":{body_len}}}"
         )
@@ -140,6 +210,7 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let path_owned = path.to_string();
         let join = thread::spawn(move || {
+            let mut state = DaemonState::default();
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -155,7 +226,7 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
                         if stream.read_exact(&mut payload).is_err() {
                             break;
                         }
-                        let response = control_response(&payload);
+                        let response = control_response(&payload, &mut state);
                         let resp_len = match u32::try_from(response.len()) {
                             Ok(v) => v,
                             Err(_) => break,
@@ -248,68 +319,71 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
             .collect();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let endpoint_owned = endpoint.to_string();
-        let join = thread::spawn(move || loop {
-            if stop_rx.try_recv().is_ok() {
-                break;
-            }
-            let handle = unsafe {
-                CreateNamedPipeW(
-                    wide.as_mut_ptr(),
-                    PIPE_ACCESS_DUPLEX,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                    1,
-                    65536,
-                    65536,
-                    0,
-                    std::ptr::null(),
-                )
-            };
-            if handle == INVALID_HANDLE_VALUE {
-                thread::sleep(Duration::from_millis(20));
-                continue;
-            }
-
-            let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
-            if connected == 0 {
-                let err = unsafe { GetLastError() };
-                if err != ERROR_PIPE_CONNECTED {
-                    unsafe {
-                        CloseHandle(handle);
-                    }
+        let join = thread::spawn(move || {
+            let mut state = DaemonState::default();
+            loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                let handle = unsafe {
+                    CreateNamedPipeW(
+                        wide.as_mut_ptr(),
+                        PIPE_ACCESS_DUPLEX,
+                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                        1,
+                        65536,
+                        65536,
+                        0,
+                        std::ptr::null(),
+                    )
+                };
+                if handle == INVALID_HANDLE_VALUE {
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 }
-            }
 
-            loop {
-                let mut len_buf = [0u8; 4];
-                if !win_read_exact(handle, &mut len_buf) {
-                    break;
+                let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+                if connected == 0 {
+                    let err = unsafe { GetLastError() };
+                    if err != ERROR_PIPE_CONNECTED {
+                        unsafe {
+                            CloseHandle(handle);
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
                 }
-                let len = u32::from_le_bytes(len_buf) as usize;
-                let mut payload = vec![0u8; len];
-                if !win_read_exact(handle, &mut payload) {
-                    break;
+
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if !win_read_exact(handle, &mut len_buf) {
+                        break;
+                    }
+                    let len = u32::from_le_bytes(len_buf) as usize;
+                    let mut payload = vec![0u8; len];
+                    if !win_read_exact(handle, &mut payload) {
+                        break;
+                    }
+                    let response = control_response(&payload, &mut state);
+                    let resp_len = match u32::try_from(response.len()) {
+                        Ok(v) => v.to_le_bytes(),
+                        Err(_) => break,
+                    };
+                    if !win_write_all(handle, &resp_len) {
+                        break;
+                    }
+                    if !win_write_all(handle, &response) {
+                        break;
+                    }
+                    unsafe {
+                        FlushFileBuffers(handle);
+                    }
                 }
-                let response = control_response(&payload);
-                let resp_len = match u32::try_from(response.len()) {
-                    Ok(v) => v.to_le_bytes(),
-                    Err(_) => break,
-                };
-                if !win_write_all(handle, &resp_len) {
-                    break;
-                }
-                if !win_write_all(handle, &response) {
-                    break;
-                }
+
                 unsafe {
-                    FlushFileBuffers(handle);
+                    DisconnectNamedPipe(handle);
+                    CloseHandle(handle);
                 }
-            }
-
-            unsafe {
-                DisconnectNamedPipe(handle);
-                CloseHandle(handle);
             }
         });
 
@@ -449,22 +523,60 @@ mod tests {
 
     #[test]
     fn control_response_health_returns_ok_json() {
-        let got = control_response(b"health");
+        let mut state = DaemonState::default();
+        let got = control_response(b"health", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"status\":\"ok\""));
     }
 
     #[test]
     fn control_response_accepts_control_prefix() {
-        let got = control_response(b"control:\x01\x02");
+        let mut state = DaemonState::default();
+        let got = control_response(b"control:\x01\x02", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"accepted_control_bytes\":2"));
     }
 
     #[test]
     fn control_response_accepts_publish_prefix() {
-        let got = control_response(b"publish:\x01\x02\x03");
+        let mut state = DaemonState::default();
+        let got = control_response(b"publish:\x01\x02\x03", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"accepted_publish_bytes\":3"));
+    }
+
+    #[test]
+    fn control_response_subscribe_poll_unsubscribe_flow() {
+        let mut state = DaemonState::default();
+        let sub = control_response(b"subscribe:audio/asr/text", &mut state);
+        let sub_text = String::from_utf8(sub).expect("valid utf8");
+        assert!(sub_text.contains("\"subscribed\":true"));
+
+        let msg = PublishMirrorEnvelope {
+            topic: "audio/asr/text".to_string(),
+            header: PublishMirrorHeader {
+                msg_type: 2,
+                timestamp_ns: 1,
+                size: 5,
+                schema_id: 1,
+                trace_id: 9,
+            },
+            payload: b"hello".to_vec(),
+        };
+        let mut req = b"publish:".to_vec();
+        req.extend(serde_cbor::to_vec(&msg).expect("cbor encode"));
+        let _ = control_response(&req, &mut state);
+
+        let poll = control_response(b"poll:audio/asr/text", &mut state);
+        let decoded: DaemonPollResponse =
+            serde_cbor::from_slice(&poll).expect("poll should decode");
+        match decoded {
+            DaemonPollResponse::Message { payload, .. } => assert_eq!(payload, b"hello"),
+            DaemonPollResponse::Empty => panic!("expected message"),
+        }
+
+        let unsub = control_response(b"unsubscribe:audio/asr/text", &mut state);
+        let unsub_text = String::from_utf8(unsub).expect("valid utf8");
+        assert!(unsub_text.contains("\"unsubscribed\":true"));
     }
 }
