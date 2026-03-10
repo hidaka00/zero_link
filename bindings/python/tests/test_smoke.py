@@ -14,6 +14,11 @@ from zerolink import (
     ZlStatus,
     ZlTimeoutError,
     SCHEMA_UTF8_STRING_V1,
+    SCHEMA_INT64_LE_V1,
+    SCHEMA_FLOAT64_LE_V1,
+    decode_int64,
+    decode_float64,
+    decode_string,
     string_header,
 )
 
@@ -59,6 +64,32 @@ class SmokeTest(unittest.TestCase):
 
         self.assertEqual(len(received), 1)
         self.assertGreater(len(received[0]), 0)
+
+    def test_publish_scalar_helpers_local(self) -> None:
+        received = []
+        headers = []
+
+        def on_msg(_topic, header, payload):
+            headers.append(header)
+            received.append(payload)
+
+        with Client("local") as client:
+            client.subscribe("audio/asr/text", on_msg)
+            client.publish_int64("audio/asr/text", 42, trace_id=101)
+            client.publish_float64("audio/asr/text", 3.5, trace_id=102)
+            client.publish_string("audio/asr/text", "scalar", trace_id=103)
+            deadline = time.time() + 2.0
+            while time.time() < deadline and len(received) < 3:
+                time.sleep(0.05)
+            client.unsubscribe("audio/asr/text")
+
+        self.assertEqual(len(received), 3)
+        self.assertEqual(headers[0].schema_id, SCHEMA_INT64_LE_V1)
+        self.assertEqual(headers[1].schema_id, SCHEMA_FLOAT64_LE_V1)
+        self.assertEqual(headers[2].schema_id, SCHEMA_UTF8_STRING_V1)
+        self.assertEqual(decode_int64(received[0]), 42)
+        self.assertAlmostEqual(decode_float64(received[1]), 3.5)
+        self.assertEqual(decode_string(received[2]), "scalar")
 
     def test_publish_buffer_roundtrip_local(self) -> None:
         received = []

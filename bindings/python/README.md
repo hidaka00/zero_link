@@ -6,6 +6,7 @@ Minimal Python wrapper over the ZeroLink C ABI.
 
 - open/close client
 - publish event payload
+- publish typed scalars (`publish_int64`, `publish_float64`, `publish_string`)
 - publish frame payload via shared buffer reference (`publish_buffer`)
 - subscribe/unsubscribe with Python callback
 - send control envelope (`send_control`)

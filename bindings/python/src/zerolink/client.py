@@ -7,7 +7,15 @@ from enum import IntEnum
 from typing import Any, Callable
 
 from ._native import load_library
-from .schemas import SCHEMA_RAW_BYTES_V1
+from .schemas import (
+    SCHEMA_RAW_BYTES_V1,
+    encode_float64,
+    encode_int64,
+    encode_string,
+    float64_header,
+    int64_header,
+    string_header,
+)
 
 
 class ZlStatus(IntEnum):
@@ -157,6 +165,18 @@ class Client:
             None,
         )
         self._check(st, "zl_publish")
+
+    def publish_int64(self, topic: str, value: int, *, trace_id: int = 1) -> None:
+        payload = encode_int64(value)
+        self.publish(topic, payload, header=int64_header(value, trace_id=trace_id))
+
+    def publish_float64(self, topic: str, value: float, *, trace_id: int = 1) -> None:
+        payload = encode_float64(value)
+        self.publish(topic, payload, header=float64_header(value, trace_id=trace_id))
+
+    def publish_string(self, topic: str, value: str, *, trace_id: int = 1) -> None:
+        payload = encode_string(value)
+        self.publish(topic, payload, header=string_header(value, trace_id=trace_id))
 
     def subscribe(self, topic: str, callback: Callable[[str, MsgHeader, bytes], None]) -> None:
         def _cb(topic_ptr, header_ptr, payload_ptr, _buf_ref_ptr, _user_data):
