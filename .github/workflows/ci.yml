@@ -245,6 +245,15 @@ jobs:
       - name: Smoke control
         run: cargo run -p zl-cli -- smoke-control _sys/control reload '{}'
 
+      - name: Python binding smoke (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/bindings/build_native.sh
+          PYTHONPATH=bindings/python/src python3 bindings/python/examples/pubsub.py
+          PYTHONPATH=bindings/python/src python3 -m unittest -v bindings/python/tests/test_smoke.py
+
   nightly-soak:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
