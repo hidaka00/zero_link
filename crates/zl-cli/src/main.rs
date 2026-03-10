@@ -8,6 +8,7 @@ use zl_ffi::{
     zl_alloc_buffer, zl_client_close, zl_client_open, zl_publish, zl_release_buffer,
     zl_send_control, zl_subscribe, zl_unsubscribe, ZlBufferRef, ZlClient, ZlMsgHeader, ZlStatus,
 };
+use zl_proto::schema;
 
 #[derive(Debug, Deserialize)]
 struct ControlEnvelope {
@@ -156,7 +157,7 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         msg_type: 2,
         timestamp_ns: 0,
         size: bytes.len() as u32,
-        schema_id: 1,
+        schema_id: schema::UTF8_STRING_V1,
         trace_id: 1,
     };
     let st = unsafe {
@@ -297,7 +298,7 @@ fn smoke_burst(topic: &str, count: usize) -> i32 {
             msg_type: 2,
             timestamp_ns: 0,
             size: bytes.len() as u32,
-            schema_id: 1,
+            schema_id: schema::UTF8_STRING_V1,
             trace_id: i as u64 + 1,
         };
         let st = unsafe {
@@ -355,7 +356,7 @@ fn smoke_trace(topic: &str, trace_id: u64) -> i32 {
         msg_type: 2,
         timestamp_ns: 0,
         size: bytes.len() as u32,
-        schema_id: 1,
+        schema_id: schema::UTF8_STRING_V1,
         trace_id,
     };
     let st = unsafe {
@@ -453,7 +454,7 @@ fn smoke_isolation(topic: &str, message: &str) -> i32 {
         msg_type: 2,
         timestamp_ns: 0,
         size: bytes.len() as u32,
-        schema_id: 1,
+        schema_id: schema::UTF8_STRING_V1,
         trace_id: 77,
     };
     let st = unsafe {
@@ -534,7 +535,7 @@ fn smoke_buffer_ref(topic: &str, message: &str) -> i32 {
         msg_type: 1,
         timestamp_ns: 0,
         size: bytes.len() as u32,
-        schema_id: 1,
+        schema_id: schema::RAW_BYTES_V1,
         trace_id: 88,
     };
     let st = unsafe {
