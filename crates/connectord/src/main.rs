@@ -6,6 +6,10 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Write};
 use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -43,6 +47,15 @@ struct PublishMirrorHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum DaemonPollResponse {
     Empty,
+    Message {
+        header: PublishMirrorHeader,
+        payload: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DaemonStreamFrame {
+    Heartbeat,
     Message {
         header: PublishMirrorHeader,
         payload: Vec<u8>,
@@ -146,6 +159,10 @@ fn topic_from_prefixed<'a>(payload: &'a [u8], prefix: &[u8]) -> Option<&'a str> 
     Some(topic)
 }
 
+fn stream_open_topic(payload: &[u8]) -> Option<&str> {
+    topic_from_prefixed(payload, b"stream-open:")
+}
+
 fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
     let queue = state.queues.entry(msg.topic.clone()).or_default();
     if queue.len() >= state.queue_limit {
@@ -155,12 +172,21 @@ fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
     queue.push_back(msg);
 }
 
+fn pop_topic_message(state: &mut DaemonState, topic: &str) -> Option<PublishMirrorEnvelope> {
+    state.queues.get_mut(topic).and_then(|q| q.pop_front())
+}
+
 fn health_response(state: &DaemonState) -> Vec<u8> {
     format!(
         "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{}}}",
         state.queue_limit, state.dropped_messages
     )
     .into_bytes()
+}
+
+fn encode_stream_frame(frame: DaemonStreamFrame) -> Vec<u8> {
+    serde_cbor::to_vec(&frame)
+        .unwrap_or_else(|_| b"{\"status\":\"error\",\"reason\":\"stream_encode_failed\"}".to_vec())
 }
 
 fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
@@ -178,8 +204,12 @@ fn control_response(payload: &[u8], state: &mut DaemonState) -> Vec<u8> {
         state.queues.remove(topic);
         return b"{\"status\":\"ok\",\"service\":\"connectord\",\"unsubscribed\":true}".to_vec();
     }
+    if let Some(topic) = stream_open_topic(payload) {
+        state.queues.entry(topic.to_string()).or_default();
+        return b"{\"status\":\"ok\",\"service\":\"connectord\",\"stream\":true}".to_vec();
+    }
     if let Some(topic) = topic_from_prefixed(payload, b"poll:") {
-        let maybe = state.queues.get_mut(topic).and_then(|q| q.pop_front());
+        let maybe = pop_topic_message(state, topic);
         let resp = match maybe {
             Some(msg) => DaemonPollResponse::Message {
                 header: msg.header,
@@ -253,47 +283,105 @@ fn start_daemon_control_server(
 
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let path_owned = path.to_string();
+        let stop_flag = Arc::new(AtomicBool::new(false));
         let join = thread::spawn(move || {
-            let mut state = DaemonState {
+            let shared_state = Arc::new(Mutex::new(DaemonState {
                 queues: HashMap::new(),
                 dropped_messages: 0,
                 queue_limit,
-            };
+            }));
+            let mut workers: Vec<JoinHandle<()>> = Vec::new();
+
             loop {
                 if stop_rx.try_recv().is_ok() {
+                    stop_flag.store(true, Ordering::Relaxed);
                     break;
                 }
                 match listener.accept() {
-                    Ok((mut stream, _addr)) => loop {
-                        let mut len_buf = [0u8; 4];
-                        if stream.read_exact(&mut len_buf).is_err() {
-                            break;
-                        }
-                        let len = u32::from_le_bytes(len_buf) as usize;
-                        let mut payload = vec![0u8; len];
-                        if stream.read_exact(&mut payload).is_err() {
-                            break;
-                        }
-                        let response = control_response(&payload, &mut state);
-                        let resp_len = match u32::try_from(response.len()) {
-                            Ok(v) => v,
-                            Err(_) => break,
-                        };
-                        if stream.write_all(&resp_len.to_le_bytes()).is_err() {
-                            break;
-                        }
-                        if stream.write_all(&response).is_err() {
-                            break;
-                        }
-                        if stream.flush().is_err() {
-                            break;
-                        }
-                    },
+                    Ok((mut stream, _addr)) => {
+                        let state = Arc::clone(&shared_state);
+                        let worker_stop = Arc::clone(&stop_flag);
+                        workers.push(thread::spawn(move || loop {
+                            let mut len_buf = [0u8; 4];
+                            if stream.read_exact(&mut len_buf).is_err() {
+                                break;
+                            }
+                            let len = u32::from_le_bytes(len_buf) as usize;
+                            let mut payload = vec![0u8; len];
+                            if stream.read_exact(&mut payload).is_err() {
+                                break;
+                            }
+                            let stream_topic = stream_open_topic(&payload).map(ToString::to_string);
+                            let response = match state.lock() {
+                                Ok(mut guard) => control_response(&payload, &mut guard),
+                                Err(_) => break,
+                            };
+                            let resp_len = match u32::try_from(response.len()) {
+                                Ok(v) => v,
+                                Err(_) => break,
+                            };
+                            if stream.write_all(&resp_len.to_le_bytes()).is_err() {
+                                break;
+                            }
+                            if stream.write_all(&response).is_err() {
+                                break;
+                            }
+                            if stream.flush().is_err() {
+                                break;
+                            }
+
+                            if let Some(topic) = stream_topic {
+                                while !worker_stop.load(Ordering::Relaxed) {
+                                    let frame = match state.lock() {
+                                        Ok(mut guard) => pop_topic_message(&mut guard, &topic),
+                                        Err(_) => break,
+                                    };
+                                    let body = match frame {
+                                        Some(msg) => {
+                                            encode_stream_frame(DaemonStreamFrame::Message {
+                                                header: msg.header,
+                                                payload: msg.payload,
+                                            })
+                                        }
+                                        None => encode_stream_frame(DaemonStreamFrame::Heartbeat),
+                                    };
+                                    let frame_len = match u32::try_from(body.len()) {
+                                        Ok(v) => v.to_le_bytes(),
+                                        Err(_) => break,
+                                    };
+                                    if stream.write_all(&frame_len).is_err() {
+                                        break;
+                                    }
+                                    if stream.write_all(&body).is_err() {
+                                        break;
+                                    }
+                                    if stream.flush().is_err() {
+                                        break;
+                                    }
+                                    thread::sleep(Duration::from_millis(100));
+                                }
+                                break;
+                            }
+                        }));
+                    }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(20));
                     }
                     Err(_) => thread::sleep(Duration::from_millis(20)),
                 }
+
+                let mut pending = Vec::with_capacity(workers.len());
+                for worker in workers.drain(..) {
+                    if worker.is_finished() {
+                        let _ = worker.join();
+                    } else {
+                        pending.push(worker);
+                    }
+                }
+                workers = pending;
+            }
+            for worker in workers {
+                let _ = worker.join();
             }
             let _ = fs::remove_file(path_owned);
         });
@@ -361,25 +449,29 @@ fn start_daemon_control_server(
 
         let pipe_name = daemon_transport_target(endpoint)
             .map_err(|e| format!("invalid daemon endpoint {endpoint}: {e:?}"))?;
-        let mut wide: Vec<u16> = std::ffi::OsStr::new(pipe_name)
+        let wide: Vec<u16> = std::ffi::OsStr::new(pipe_name)
             .encode_wide()
             .chain(iter::once(0))
             .collect();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let endpoint_owned = endpoint.to_string();
+        let stop_flag = Arc::new(AtomicBool::new(false));
         let join = thread::spawn(move || {
-            let mut state = DaemonState {
+            let shared_state = Arc::new(Mutex::new(DaemonState {
                 queues: HashMap::new(),
                 dropped_messages: 0,
                 queue_limit,
-            };
+            }));
+            let mut workers: Vec<JoinHandle<()>> = Vec::new();
+
             loop {
                 if stop_rx.try_recv().is_ok() {
+                    stop_flag.store(true, Ordering::Relaxed);
                     break;
                 }
                 let handle = unsafe {
                     CreateNamedPipeW(
-                        wide.as_mut_ptr(),
+                        wide.as_ptr(),
                         PIPE_ACCESS_DUPLEX,
                         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                         1,
@@ -406,36 +498,90 @@ fn start_daemon_control_server(
                     }
                 }
 
-                loop {
-                    let mut len_buf = [0u8; 4];
-                    if !win_read_exact(handle, &mut len_buf) {
-                        break;
-                    }
-                    let len = u32::from_le_bytes(len_buf) as usize;
-                    let mut payload = vec![0u8; len];
-                    if !win_read_exact(handle, &mut payload) {
-                        break;
-                    }
-                    let response = control_response(&payload, &mut state);
-                    let resp_len = match u32::try_from(response.len()) {
-                        Ok(v) => v.to_le_bytes(),
-                        Err(_) => break,
-                    };
-                    if !win_write_all(handle, &resp_len) {
-                        break;
-                    }
-                    if !win_write_all(handle, &response) {
-                        break;
-                    }
-                    unsafe {
-                        FlushFileBuffers(handle);
-                    }
-                }
+                let state = Arc::clone(&shared_state);
+                let worker_stop = Arc::clone(&stop_flag);
+                let worker_handle = handle as isize;
+                workers.push(thread::spawn(move || {
+                    let handle = worker_handle as HANDLE;
+                    loop {
+                        let mut len_buf = [0u8; 4];
+                        if !win_read_exact(handle, &mut len_buf) {
+                            break;
+                        }
+                        let len = u32::from_le_bytes(len_buf) as usize;
+                        let mut payload = vec![0u8; len];
+                        if !win_read_exact(handle, &mut payload) {
+                            break;
+                        }
+                        let stream_topic = stream_open_topic(&payload).map(ToString::to_string);
+                        let response = match state.lock() {
+                            Ok(mut guard) => control_response(&payload, &mut guard),
+                            Err(_) => break,
+                        };
+                        let resp_len = match u32::try_from(response.len()) {
+                            Ok(v) => v.to_le_bytes(),
+                            Err(_) => break,
+                        };
+                        if !win_write_all(handle, &resp_len) {
+                            break;
+                        }
+                        if !win_write_all(handle, &response) {
+                            break;
+                        }
+                        unsafe {
+                            FlushFileBuffers(handle);
+                        }
 
-                unsafe {
-                    DisconnectNamedPipe(handle);
-                    CloseHandle(handle);
+                        if let Some(topic) = stream_topic {
+                            while !worker_stop.load(Ordering::Relaxed) {
+                                let frame = match state.lock() {
+                                    Ok(mut guard) => pop_topic_message(&mut guard, &topic),
+                                    Err(_) => break,
+                                };
+                                let body = match frame {
+                                    Some(msg) => encode_stream_frame(DaemonStreamFrame::Message {
+                                        header: msg.header,
+                                        payload: msg.payload,
+                                    }),
+                                    None => encode_stream_frame(DaemonStreamFrame::Heartbeat),
+                                };
+                                let frame_len = match u32::try_from(body.len()) {
+                                    Ok(v) => v.to_le_bytes(),
+                                    Err(_) => break,
+                                };
+                                if !win_write_all(handle, &frame_len) {
+                                    break;
+                                }
+                                if !win_write_all(handle, &body) {
+                                    break;
+                                }
+                                unsafe {
+                                    FlushFileBuffers(handle);
+                                }
+                                thread::sleep(Duration::from_millis(100));
+                            }
+                            break;
+                        }
+                    }
+
+                    unsafe {
+                        DisconnectNamedPipe(handle);
+                        CloseHandle(handle);
+                    }
+                }));
+
+                let mut pending = Vec::with_capacity(workers.len());
+                for worker in workers.drain(..) {
+                    if worker.is_finished() {
+                        let _ = worker.join();
+                    } else {
+                        pending.push(worker);
+                    }
                 }
+                workers = pending;
+            }
+            for worker in workers {
+                let _ = worker.join();
             }
         });
 

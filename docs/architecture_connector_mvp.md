@@ -224,6 +224,11 @@ ABI 互換ポリシー:
   - 接続断時は指数バックオフで再接続し、再接続成功後に active subscription を再送する。
   - 再送境界は `seq` と `trace_id` で判定し、重複配信はクライアント側で best effort 抑止する。
 
+現状実装メモ（2026-03-10）:
+- `connectord` / `zl-ffi` に試験実装を追加済み（`stream-open:<topic>` + `DaemonStreamFrame::{Heartbeat,Message}`）。
+- 既定は pull 型のまま。`ZL_DAEMON_SUBSCRIBE_MODE=stream` を設定した場合のみ stream 型を有効化。
+- stream 接続断時の pull への自動フォールバックと再接続再購読は未実装（残タスク）。
+
 ## 10. MVP 固定値（実装開始前に確定）
 
 ### 10.1 シリアライズ方式

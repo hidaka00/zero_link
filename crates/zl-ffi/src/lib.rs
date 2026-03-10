@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use zl_ipc::IpcError;
+use zl_ipc::{ControlSession, IpcError};
 use zl_proto::{BufferRef, MessageHeader};
 use zl_router::{RoutedMessage, Router, RouterError};
 
@@ -93,6 +93,15 @@ struct PublishMirrorHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum DaemonPollResponse {
     Empty,
+    Message {
+        header: PublishMirrorHeader,
+        payload: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DaemonStreamFrame {
+    Heartbeat,
     Message {
         header: PublishMirrorHeader,
         payload: Vec<u8>,
@@ -319,6 +328,17 @@ fn poll_request_body(topic: &str) -> Vec<u8> {
     req
 }
 
+fn stream_open_request_body(topic: &str) -> Vec<u8> {
+    let mut req = Vec::with_capacity("stream-open:".len() + topic.len());
+    req.extend_from_slice(b"stream-open:");
+    req.extend_from_slice(topic.as_bytes());
+    req
+}
+
+fn daemon_subscribe_use_stream() -> bool {
+    matches!(std::env::var("ZL_DAEMON_SUBSCRIBE_MODE"), Ok(v) if v.eq_ignore_ascii_case("stream"))
+}
+
 fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
     let parsed: Value = serde_json::from_slice(resp).map_err(|_| ZlStatus::Internal)?;
     let status = parsed
@@ -529,57 +549,110 @@ pub unsafe extern "C" fn zl_subscribe(
     let user_data_addr = user_data as usize;
     let (stop_tx, stop_rx) = mpsc::channel();
     let join = if let Some(endpoint) = daemon_endpoint {
-        let sub_req = subscribe_request_body(&topic_str);
+        let use_stream = daemon_subscribe_use_stream();
+        let sub_req = if use_stream {
+            stream_open_request_body(&topic_str)
+        } else {
+            subscribe_request_body(&topic_str)
+        };
         let mut sub_resp = [0u8; 512];
-        let sub_len = match zl_ipc::control_request(&endpoint, &sub_req, &mut sub_resp) {
+        let session = match ControlSession::connect(&endpoint) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        let sub_len = match session.request(&sub_req, &mut sub_resp) {
             Ok(v) => v,
             Err(err) => return from_ipc_error(err),
         };
         if let Err(s) = daemon_response_ok(&sub_resp[..sub_len]) {
             return s;
         }
-        let poll_req = poll_request_body(&topic_str);
-        thread::spawn(move || loop {
-            if stop_rx.try_recv().is_ok() {
-                break;
-            }
-            let mut resp = [0u8; 4096];
-            match zl_ipc::control_request(&endpoint, &poll_req, &mut resp) {
-                Ok(len) => {
-                    if let Ok(DaemonPollResponse::Message { header, payload }) =
-                        serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
-                    {
-                        let header_ffi = ZlMsgHeader {
-                            msg_type: header.msg_type,
-                            timestamp_ns: header.timestamp_ns,
-                            size: header.size,
-                            schema_id: header.schema_id,
-                            trace_id: header.trace_id,
-                        };
-                        let header_ptr = &header_ffi as *const ZlMsgHeader;
-                        let payload_ptr = if payload.is_empty() {
-                            std::ptr::null()
-                        } else {
-                            payload.as_ptr() as *const c_void
-                        };
-                        callback(
-                            topic_c.as_ptr(),
-                            header_ptr,
-                            payload_ptr,
-                            std::ptr::null(),
-                            user_data_addr as *mut c_void,
-                        );
+
+        if use_stream {
+            thread::spawn(move || loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                let mut resp = [0u8; 4096];
+                match session.recv_frame(&mut resp) {
+                    Ok(len) => {
+                        if let Ok(DaemonStreamFrame::Message { header, payload }) =
+                            serde_cbor::from_slice::<DaemonStreamFrame>(&resp[..len])
+                        {
+                            let header_ffi = ZlMsgHeader {
+                                msg_type: header.msg_type,
+                                timestamp_ns: header.timestamp_ns,
+                                size: header.size,
+                                schema_id: header.schema_id,
+                                trace_id: header.trace_id,
+                            };
+                            let header_ptr = &header_ffi as *const ZlMsgHeader;
+                            let payload_ptr = if payload.is_empty() {
+                                std::ptr::null()
+                            } else {
+                                payload.as_ptr() as *const c_void
+                            };
+                            callback(
+                                topic_c.as_ptr(),
+                                header_ptr,
+                                payload_ptr,
+                                std::ptr::null(),
+                                user_data_addr as *mut c_void,
+                            );
+                        }
+                    }
+                    Err(IpcError::Disconnected) => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(20));
                     }
                 }
-                Err(IpcError::Disconnected) => {
-                    thread::sleep(Duration::from_millis(20));
+            })
+        } else {
+            let poll_req = poll_request_body(&topic_str);
+            thread::spawn(move || loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
                 }
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(20));
+                let mut resp = [0u8; 4096];
+                match session.request(&poll_req, &mut resp) {
+                    Ok(len) => {
+                        if let Ok(DaemonPollResponse::Message { header, payload }) =
+                            serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
+                        {
+                            let header_ffi = ZlMsgHeader {
+                                msg_type: header.msg_type,
+                                timestamp_ns: header.timestamp_ns,
+                                size: header.size,
+                                schema_id: header.schema_id,
+                                trace_id: header.trace_id,
+                            };
+                            let header_ptr = &header_ffi as *const ZlMsgHeader;
+                            let payload_ptr = if payload.is_empty() {
+                                std::ptr::null()
+                            } else {
+                                payload.as_ptr() as *const c_void
+                            };
+                            callback(
+                                topic_c.as_ptr(),
+                                header_ptr,
+                                payload_ptr,
+                                std::ptr::null(),
+                                user_data_addr as *mut c_void,
+                            );
+                        }
+                    }
+                    Err(IpcError::Disconnected) => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
                 }
-            }
-            thread::sleep(Duration::from_millis(20));
-        })
+                thread::sleep(Duration::from_millis(20));
+            })
+        }
     } else {
         // Safety: client pointer checked for null and only immutably accessed.
         let transport = unsafe { &(*client).inner.transport };

@@ -164,14 +164,37 @@ pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChann
     Err(IpcError::InvalidEndpoint)
 }
 
+pub struct ControlSession {
+    channel: Box<dyn ControlChannel>,
+}
+
+impl ControlSession {
+    pub fn connect(endpoint: &str) -> IpcResult<Self> {
+        let channel = connect_control_channel(endpoint)?;
+        Ok(Self { channel })
+    }
+
+    pub fn send_frame(&self, request: &[u8]) -> IpcResult<()> {
+        self.channel.send(request)
+    }
+
+    pub fn recv_frame(&self, response_buf: &mut [u8]) -> IpcResult<usize> {
+        self.channel.recv(response_buf)
+    }
+
+    pub fn request(&self, request: &[u8], response_buf: &mut [u8]) -> IpcResult<usize> {
+        self.send_frame(request)?;
+        self.recv_frame(response_buf)
+    }
+}
+
 pub fn control_request(
     endpoint: &str,
     request: &[u8],
     response_buf: &mut [u8],
 ) -> IpcResult<usize> {
-    let channel = connect_control_channel(endpoint)?;
-    channel.send(request)?;
-    channel.recv(response_buf)
+    let session = ControlSession::connect(endpoint)?;
+    session.request(request, response_buf)
 }
 
 #[cfg(test)]
@@ -191,5 +214,15 @@ mod tests {
     fn daemon_endpoint_reports_disconnected() {
         let res = connect_control_channel("daemon://local");
         assert!(matches!(res, Err(IpcError::Disconnected)));
+    }
+
+    #[test]
+    fn loopback_session_roundtrip() {
+        let session = ControlSession::connect("inproc://loopback").expect("connect should succeed");
+        let mut buf = [0u8; 8];
+        let len = session
+            .request(b"ping", &mut buf)
+            .expect("request should succeed");
+        assert_eq!(&buf[..len], b"ping");
     }
 }
