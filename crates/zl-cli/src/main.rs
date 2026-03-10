@@ -15,6 +15,15 @@ struct ControlEnvelope {
     payload: Vec<u8>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DaemonHealthResponse {
+    status: String,
+    service: String,
+    mode: String,
+    queue_limit: Option<u64>,
+    dropped_messages: Option<u64>,
+}
+
 extern "C" fn payload_callback(
     _topic: *const c_char,
     header: *const ZlMsgHeader,
@@ -212,7 +221,23 @@ fn daemon_health() -> i32 {
             return 1;
         }
     };
-    println!("{}", String::from_utf8_lossy(&buf[..len]));
+    let text = String::from_utf8_lossy(&buf[..len]);
+    match serde_json::from_str::<DaemonHealthResponse>(&text) {
+        Ok(v) => {
+            println!("status={}", v.status);
+            println!("service={}", v.service);
+            println!("mode={}", v.mode);
+            if let Some(limit) = v.queue_limit {
+                println!("queue_limit={limit}");
+            }
+            if let Some(dropped) = v.dropped_messages {
+                println!("dropped_messages={dropped}");
+            }
+        }
+        Err(_) => {
+            println!("{text}");
+        }
+    }
     0
 }
 

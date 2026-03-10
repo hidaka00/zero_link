@@ -53,13 +53,16 @@ enum DaemonPollResponse {
 struct DaemonState {
     queues: HashMap<String, VecDeque<PublishMirrorEnvelope>>,
     dropped_messages: u64,
+    queue_limit: usize,
 }
 
-const TOPIC_QUEUE_LIMIT: usize = 100;
+const DEFAULT_TOPIC_QUEUE_LIMIT: usize = 100;
 
 fn usage() {
     println!("connectord commands:");
-    println!("  serve [--max-runtime-ms <ms>] [--tick-ms <ms>] [--control-endpoint <endpoint>]");
+    println!(
+        "  serve [--max-runtime-ms <ms>] [--tick-ms <ms>] [--control-endpoint <endpoint>] [--queue-limit <n>]"
+    );
     println!("  health");
 }
 
@@ -122,7 +125,7 @@ fn topic_from_prefixed<'a>(payload: &'a [u8], prefix: &[u8]) -> Option<&'a str> 
 
 fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
     let queue = state.queues.entry(msg.topic.clone()).or_default();
-    if queue.len() >= TOPIC_QUEUE_LIMIT {
+    if queue.len() >= state.queue_limit {
         let _ = queue.pop_front();
         state.dropped_messages = state.dropped_messages.saturating_add(1);
     }
@@ -131,8 +134,8 @@ fn enqueue_publish(state: &mut DaemonState, msg: PublishMirrorEnvelope) {
 
 fn health_response(state: &DaemonState) -> Vec<u8> {
     format!(
-        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{TOPIC_QUEUE_LIMIT},\"dropped_messages\":{}}}",
-        state.dropped_messages
+        "{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"daemon-control\",\"queue_limit\":{},\"dropped_messages\":{}}}",
+        state.queue_limit, state.dropped_messages
     )
     .into_bytes()
 }
@@ -204,7 +207,10 @@ impl DaemonControlServer {
     }
 }
 
-fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlServer>, String> {
+fn start_daemon_control_server(
+    endpoint: &str,
+    queue_limit: usize,
+) -> Result<Option<DaemonControlServer>, String> {
     if !endpoint.starts_with("daemon://") {
         return Ok(None);
     }
@@ -225,7 +231,11 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let path_owned = path.to_string();
         let join = thread::spawn(move || {
-            let mut state = DaemonState::default();
+            let mut state = DaemonState {
+                queues: HashMap::new(),
+                dropped_messages: 0,
+                queue_limit,
+            };
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -335,7 +345,11 @@ fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlSer
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let endpoint_owned = endpoint.to_string();
         let join = thread::spawn(move || {
-            let mut state = DaemonState::default();
+            let mut state = DaemonState {
+                queues: HashMap::new(),
+                dropped_messages: 0,
+                queue_limit,
+            };
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -443,11 +457,22 @@ fn run_serve(args: &[String]) -> i32 {
             return 2;
         }
     };
+    let queue_limit = match parse_u64_arg(args, "--queue-limit") {
+        Ok(v) => v.unwrap_or(DEFAULT_TOPIC_QUEUE_LIMIT as u64) as usize,
+        Err(msg) => {
+            eprintln!("{msg}");
+            return 2;
+        }
+    };
     if tick_ms == 0 {
         eprintln!("--tick-ms must be > 0");
         return 2;
     }
-    let daemon_server = match start_daemon_control_server(&control_endpoint) {
+    if queue_limit == 0 {
+        eprintln!("--queue-limit must be > 0");
+        return 2;
+    }
+    let daemon_server = match start_daemon_control_server(&control_endpoint, queue_limit) {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("{msg}");
@@ -464,7 +489,7 @@ fn run_serve(args: &[String]) -> i32 {
 
     println!("connectord: starting");
     println!(
-        "connectord: ready (control_endpoint={control_endpoint}, tick_ms={tick_ms}, max_runtime_ms={})",
+        "connectord: ready (control_endpoint={control_endpoint}, tick_ms={tick_ms}, queue_limit={queue_limit}, max_runtime_ms={})",
         max_runtime_ms
             .map(|v| v.to_string())
             .unwrap_or_else(|| "none".to_string())
@@ -538,7 +563,11 @@ mod tests {
 
     #[test]
     fn control_response_health_returns_ok_json() {
-        let mut state = DaemonState::default();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+        };
         let got = control_response(b"health", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"status\":\"ok\""));
@@ -546,7 +575,11 @@ mod tests {
 
     #[test]
     fn control_response_accepts_control_prefix() {
-        let mut state = DaemonState::default();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+        };
         let got = control_response(b"control:\x01\x02", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"accepted_control_bytes\":2"));
@@ -554,7 +587,11 @@ mod tests {
 
     #[test]
     fn control_response_accepts_publish_prefix() {
-        let mut state = DaemonState::default();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+        };
         let got = control_response(b"publish:\x01\x02\x03", &mut state);
         let text = String::from_utf8(got).expect("valid utf8");
         assert!(text.contains("\"accepted_publish_bytes\":3"));
@@ -562,7 +599,11 @@ mod tests {
 
     #[test]
     fn control_response_subscribe_poll_unsubscribe_flow() {
-        let mut state = DaemonState::default();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+        };
         let sub = control_response(b"subscribe:audio/asr/text", &mut state);
         let sub_text = String::from_utf8(sub).expect("valid utf8");
         assert!(sub_text.contains("\"subscribed\":true"));
@@ -597,11 +638,15 @@ mod tests {
 
     #[test]
     fn queue_limit_drops_oldest() {
-        let mut state = DaemonState::default();
+        let mut state = DaemonState {
+            queues: HashMap::new(),
+            dropped_messages: 0,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
+        };
         let topic = "audio/asr/text";
         let _ = control_response(format!("subscribe:{topic}").as_bytes(), &mut state);
 
-        for i in 0..(TOPIC_QUEUE_LIMIT + 2) {
+        for i in 0..(DEFAULT_TOPIC_QUEUE_LIMIT + 2) {
             let msg = PublishMirrorEnvelope {
                 topic: topic.to_string(),
                 header: PublishMirrorHeader {
@@ -634,6 +679,7 @@ mod tests {
         let mut state = DaemonState {
             queues: HashMap::new(),
             dropped_messages: 7,
+            queue_limit: DEFAULT_TOPIC_QUEUE_LIMIT,
         };
         let text = String::from_utf8(control_response(b"health", &mut state))
             .expect("health should be utf8");
