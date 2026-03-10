@@ -25,17 +25,23 @@ PYTHONPATH=bindings/python/src python3 bindings/python/examples/pubsub.py
 
 You can override native library path with `ZEROLINK_NATIVE_LIB`.
 
-3. Run smoke test:
+3. Optional: install as editable package for local development (no public publish):
 
 ```bash
-PYTHONPATH=bindings/python/src python3 -m unittest -v bindings/python/tests/test_smoke.py
+./scripts/bindings/python_dev_setup.sh
+source .venv-zerolink/bin/activate
 ```
 
-4. Run daemon smoke test (when `connectord` is running):
+4. Run smoke test:
+
+```bash
+python3 -m unittest -v bindings/python/tests/test_smoke.py
+```
+
+5. Run daemon smoke test (when `connectord` is running):
 
 ```bash
 ZEROLINK_PY_SMOKE_DAEMON=1 \
 ZEROLINK_PY_ENDPOINT=daemon://local \
-PYTHONPATH=bindings/python/src \
 python3 -m unittest -v bindings/python/tests/test_smoke.py
 ```

@@ -256,8 +256,11 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/bindings/build_native.sh
-          PYTHONPATH=bindings/python/src python3 bindings/python/examples/pubsub.py
-          PYTHONPATH=bindings/python/src python3 -m unittest -v bindings/python/tests/test_smoke.py
+          python3 -m venv .venv-zerolink-ci
+          source .venv-zerolink-ci/bin/activate
+          python -m pip install -e bindings/python
+          python bindings/python/examples/pubsub.py
+          python -m unittest -v bindings/python/tests/test_smoke.py
 
   nightly-soak:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
