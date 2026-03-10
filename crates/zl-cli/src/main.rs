@@ -78,6 +78,7 @@ fn usage() {
     println!("  smoke-isolation [topic] [message]");
     println!("  smoke-buffer-ref [topic] [message]");
     println!("  smoke-metrics");
+    println!("  smoke-acceptance [topic] [rounds] [burst_count]");
     println!("  smoke-subscribe [topic] [wait_ms]");
     println!("  smoke-control [topic] [command] [payload]");
     println!("  daemon-health");
@@ -569,6 +570,40 @@ fn smoke_metrics() -> i32 {
     }
 }
 
+fn smoke_acceptance(topic: &str, rounds: usize, burst_count: usize) -> i32 {
+    if rounds == 0 || burst_count == 0 {
+        eprintln!("rounds and burst_count must be > 0");
+        return 2;
+    }
+    for i in 0..rounds {
+        if smoke_burst(topic, burst_count) != 0 {
+            eprintln!("acceptance failed: burst round={i}");
+            return 1;
+        }
+        let trace = 10_000_u64 + i as u64;
+        if smoke_trace(topic, trace) != 0 {
+            eprintln!("acceptance failed: trace round={i}");
+            return 1;
+        }
+        let iso_msg = format!("iso-{i}");
+        if smoke_isolation(topic, &iso_msg) != 0 {
+            eprintln!("acceptance failed: isolation round={i}");
+            return 1;
+        }
+        let buf_msg = format!("buffer-{i}");
+        if smoke_buffer_ref(topic, &buf_msg) != 0 {
+            eprintln!("acceptance failed: buffer_ref round={i}");
+            return 1;
+        }
+    }
+    if smoke_metrics() != 0 {
+        eprintln!("acceptance failed: metrics");
+        return 1;
+    }
+    println!("acceptance_ok=true rounds={rounds} burst_count={burst_count}");
+    0
+}
+
 fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
     let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
     let topic_c = match CString::new(topic) {
@@ -708,6 +743,18 @@ fn main() {
             smoke_buffer_ref(topic, message)
         }
         "smoke-metrics" => smoke_metrics(),
+        "smoke-acceptance" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let rounds = args
+                .get(3)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(2);
+            let burst_count = args
+                .get(4)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(200);
+            smoke_acceptance(topic, rounds, burst_count)
+        }
         "smoke-subscribe" => {
             let topic = args.get(2).map_or("audio/asr/text", String::as_str);
             let wait_ms = args
