@@ -8,6 +8,9 @@ SCHEMA_RAW_BYTES_V1 = 1
 SCHEMA_INT64_LE_V1 = 1001
 SCHEMA_FLOAT64_LE_V1 = 1002
 SCHEMA_UTF8_STRING_V1 = 1003
+SCHEMA_BOOL_V1 = 1004
+SCHEMA_INT32_LE_V1 = 1005
+SCHEMA_UINT64_LE_V1 = 1006
 SCHEMA_IMAGE_FRAME_V1 = 1101
 
 
@@ -64,6 +67,36 @@ def image_frame_header(payload_size: int, *, trace_id: int = 1, timestamp_ns: in
     )
 
 
+def bool_header(value: bool, *, trace_id: int = 1, timestamp_ns: int = 0):
+    return _msg_header(
+        msg_type=2,
+        size=1,
+        schema_id=SCHEMA_BOOL_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
+def int32_header(value: int, *, trace_id: int = 1, timestamp_ns: int = 0):
+    return _msg_header(
+        msg_type=2,
+        size=4,
+        schema_id=SCHEMA_INT32_LE_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
+def uint64_header(value: int, *, trace_id: int = 1, timestamp_ns: int = 0):
+    return _msg_header(
+        msg_type=2,
+        size=8,
+        schema_id=SCHEMA_UINT64_LE_V1,
+        trace_id=trace_id,
+        timestamp_ns=timestamp_ns,
+    )
+
+
 def encode_int64(value: int) -> bytes:
     return struct.pack("<q", value)
 
@@ -90,6 +123,36 @@ def encode_string(value: str) -> bytes:
 
 def decode_string(payload: bytes) -> str:
     return payload.decode("utf-8")
+
+
+def encode_bool(value: bool) -> bytes:
+    return b"\x01" if value else b"\x00"
+
+
+def decode_bool(payload: bytes) -> bool:
+    if len(payload) != 1:
+        raise ValueError("bool payload length must be 1")
+    return payload[0] != 0
+
+
+def encode_int32(value: int) -> bytes:
+    return struct.pack("<i", value)
+
+
+def decode_int32(payload: bytes) -> int:
+    if len(payload) != 4:
+        raise ValueError("int32 payload length must be 4")
+    return struct.unpack("<i", payload)[0]
+
+
+def encode_uint64(value: int) -> bytes:
+    return struct.pack("<Q", value)
+
+
+def decode_uint64(payload: bytes) -> int:
+    if len(payload) != 8:
+        raise ValueError("uint64 payload length must be 8")
+    return struct.unpack("<Q", payload)[0]
 
 
 @dataclass

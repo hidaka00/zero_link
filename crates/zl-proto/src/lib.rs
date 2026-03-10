@@ -11,6 +11,9 @@ pub mod schema {
     pub const INT64_LE_V1: u32 = 1001;
     pub const FLOAT64_LE_V1: u32 = 1002;
     pub const UTF8_STRING_V1: u32 = 1003;
+    pub const BOOL_V1: u32 = 1004;
+    pub const INT32_LE_V1: u32 = 1005;
+    pub const UINT64_LE_V1: u32 = 1006;
     pub const IMAGE_FRAME_V1: u32 = 1101;
 }
 

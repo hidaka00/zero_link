@@ -271,6 +271,7 @@ jobs:
           source .venv-zerolink-ci/bin/activate
           python -m pip install -e bindings/python
           python bindings/python/examples/pubsub.py
+          python bindings/python/examples/scalars_demo.py
           python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
 
   nightly-soak:

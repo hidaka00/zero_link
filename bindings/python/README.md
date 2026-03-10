@@ -72,9 +72,10 @@ Daemon smoke includes both standard publish and buffer-ref publish paths.
 
 The package exports common schema IDs and codec helpers for cross-process consistency:
 
-- `SCHEMA_INT64_LE_V1`, `SCHEMA_FLOAT64_LE_V1`, `SCHEMA_UTF8_STRING_V1`, `SCHEMA_IMAGE_FRAME_V1`
-- `encode_int64/decode_int64`
-- `encode_float64/decode_float64`
+- `SCHEMA_INT64_LE_V1`, `SCHEMA_INT32_LE_V1`, `SCHEMA_UINT64_LE_V1`
+- `SCHEMA_FLOAT64_LE_V1`, `SCHEMA_BOOL_V1`, `SCHEMA_UTF8_STRING_V1`, `SCHEMA_IMAGE_FRAME_V1`
+- `encode_int64/decode_int64`, `encode_int32/decode_int32`, `encode_uint64/decode_uint64`
+- `encode_float64/decode_float64`, `encode_bool/decode_bool`
 - `encode_string/decode_string`
 - `ImageMeta` (JSON metadata helper for image frame side-channel)
 

@@ -9,12 +9,18 @@ from typing import Any, Callable
 from ._native import load_library
 from .schemas import (
     SCHEMA_RAW_BYTES_V1,
+    bool_header,
+    encode_bool,
     encode_float64,
+    encode_int32,
     encode_int64,
     encode_string,
     float64_header,
+    int32_header,
     int64_header,
     string_header,
+    encode_uint64,
+    uint64_header,
 )
 
 
@@ -170,9 +176,21 @@ class Client:
         payload = encode_int64(value)
         self.publish(topic, payload, header=int64_header(value, trace_id=trace_id))
 
+    def publish_int32(self, topic: str, value: int, *, trace_id: int = 1) -> None:
+        payload = encode_int32(value)
+        self.publish(topic, payload, header=int32_header(value, trace_id=trace_id))
+
+    def publish_uint64(self, topic: str, value: int, *, trace_id: int = 1) -> None:
+        payload = encode_uint64(value)
+        self.publish(topic, payload, header=uint64_header(value, trace_id=trace_id))
+
     def publish_float64(self, topic: str, value: float, *, trace_id: int = 1) -> None:
         payload = encode_float64(value)
         self.publish(topic, payload, header=float64_header(value, trace_id=trace_id))
+
+    def publish_bool(self, topic: str, value: bool, *, trace_id: int = 1) -> None:
+        payload = encode_bool(value)
+        self.publish(topic, payload, header=bool_header(value, trace_id=trace_id))
 
     def publish_string(self, topic: str, value: str, *, trace_id: int = 1) -> None:
         payload = encode_string(value)

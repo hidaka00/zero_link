@@ -16,9 +16,15 @@ from zerolink import (
     SCHEMA_UTF8_STRING_V1,
     SCHEMA_INT64_LE_V1,
     SCHEMA_FLOAT64_LE_V1,
+    SCHEMA_BOOL_V1,
+    SCHEMA_INT32_LE_V1,
+    SCHEMA_UINT64_LE_V1,
+    decode_bool,
+    decode_int32,
     decode_int64,
     decode_float64,
     decode_string,
+    decode_uint64,
     string_header,
 )
 
@@ -76,20 +82,29 @@ class SmokeTest(unittest.TestCase):
         with Client("local") as client:
             client.subscribe("audio/asr/text", on_msg)
             client.publish_int64("audio/asr/text", 42, trace_id=101)
+            client.publish_int32("audio/asr/text", -7, trace_id=104)
+            client.publish_uint64("audio/asr/text", 1234567890123, trace_id=105)
             client.publish_float64("audio/asr/text", 3.5, trace_id=102)
+            client.publish_bool("audio/asr/text", True, trace_id=106)
             client.publish_string("audio/asr/text", "scalar", trace_id=103)
             deadline = time.time() + 2.0
-            while time.time() < deadline and len(received) < 3:
+            while time.time() < deadline and len(received) < 6:
                 time.sleep(0.05)
             client.unsubscribe("audio/asr/text")
 
-        self.assertEqual(len(received), 3)
+        self.assertEqual(len(received), 6)
         self.assertEqual(headers[0].schema_id, SCHEMA_INT64_LE_V1)
-        self.assertEqual(headers[1].schema_id, SCHEMA_FLOAT64_LE_V1)
-        self.assertEqual(headers[2].schema_id, SCHEMA_UTF8_STRING_V1)
+        self.assertEqual(headers[1].schema_id, SCHEMA_INT32_LE_V1)
+        self.assertEqual(headers[2].schema_id, SCHEMA_UINT64_LE_V1)
+        self.assertEqual(headers[3].schema_id, SCHEMA_FLOAT64_LE_V1)
+        self.assertEqual(headers[4].schema_id, SCHEMA_BOOL_V1)
+        self.assertEqual(headers[5].schema_id, SCHEMA_UTF8_STRING_V1)
         self.assertEqual(decode_int64(received[0]), 42)
-        self.assertAlmostEqual(decode_float64(received[1]), 3.5)
-        self.assertEqual(decode_string(received[2]), "scalar")
+        self.assertEqual(decode_int32(received[1]), -7)
+        self.assertEqual(decode_uint64(received[2]), 1234567890123)
+        self.assertAlmostEqual(decode_float64(received[3]), 3.5)
+        self.assertEqual(decode_bool(received[4]), True)
+        self.assertEqual(decode_string(received[5]), "scalar")
 
     def test_publish_buffer_roundtrip_local(self) -> None:
         received = []
