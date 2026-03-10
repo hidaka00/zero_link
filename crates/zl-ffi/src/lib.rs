@@ -339,6 +339,8 @@ fn daemon_subscribe_use_stream() -> bool {
     matches!(std::env::var("ZL_DAEMON_SUBSCRIBE_MODE"), Ok(v) if v.eq_ignore_ascii_case("stream"))
 }
 
+const STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK: u32 = 5;
+
 fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
     let parsed: Value = serde_json::from_slice(resp).map_err(|_| ZlStatus::Internal)?;
     let status = parsed
@@ -569,13 +571,51 @@ pub unsafe extern "C" fn zl_subscribe(
         }
 
         if use_stream {
+            let poll_req = poll_request_body(&topic_str);
             thread::spawn(move || {
                 let mut active_session = Some(session);
                 let mut reconnect_backoff_ms = 50u64;
+                let mut reconnect_failures = 0u32;
+                let mut use_pull_fallback = false;
 
                 loop {
                     if stop_rx.try_recv().is_ok() {
                         break;
+                    }
+
+                    if use_pull_fallback {
+                        let mut resp = [0u8; 4096];
+                        match zl_ipc::control_request(&endpoint, &poll_req, &mut resp) {
+                            Ok(len) => {
+                                if let Ok(DaemonPollResponse::Message { header, payload }) =
+                                    serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
+                                {
+                                    let header_ffi = ZlMsgHeader {
+                                        msg_type: header.msg_type,
+                                        timestamp_ns: header.timestamp_ns,
+                                        size: header.size,
+                                        schema_id: header.schema_id,
+                                        trace_id: header.trace_id,
+                                    };
+                                    let header_ptr = &header_ffi as *const ZlMsgHeader;
+                                    let payload_ptr = if payload.is_empty() {
+                                        std::ptr::null()
+                                    } else {
+                                        payload.as_ptr() as *const c_void
+                                    };
+                                    callback(
+                                        topic_c.as_ptr(),
+                                        header_ptr,
+                                        payload_ptr,
+                                        std::ptr::null(),
+                                        user_data_addr as *mut c_void,
+                                    );
+                                }
+                            }
+                            Err(_) => thread::sleep(Duration::from_millis(20)),
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                        continue;
                     }
 
                     if active_session.is_none() {
@@ -585,6 +625,12 @@ pub unsafe extern "C" fn zl_subscribe(
                                 thread::sleep(Duration::from_millis(reconnect_backoff_ms));
                                 reconnect_backoff_ms =
                                     (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                                reconnect_failures = reconnect_failures.saturating_add(1);
+                                if reconnect_failures
+                                    >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
+                                {
+                                    use_pull_fallback = true;
+                                }
                                 continue;
                             }
                         };
@@ -595,6 +641,12 @@ pub unsafe extern "C" fn zl_subscribe(
                                 thread::sleep(Duration::from_millis(reconnect_backoff_ms));
                                 reconnect_backoff_ms =
                                     (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                                reconnect_failures = reconnect_failures.saturating_add(1);
+                                if reconnect_failures
+                                    >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
+                                {
+                                    use_pull_fallback = true;
+                                }
                                 continue;
                             }
                         };
@@ -602,10 +654,16 @@ pub unsafe extern "C" fn zl_subscribe(
                             thread::sleep(Duration::from_millis(reconnect_backoff_ms));
                             reconnect_backoff_ms =
                                 (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                            reconnect_failures = reconnect_failures.saturating_add(1);
+                            if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
+                            {
+                                use_pull_fallback = true;
+                            }
                             continue;
                         }
                         active_session = Some(new_session);
                         reconnect_backoff_ms = 50;
+                        reconnect_failures = 0;
                     }
 
                     let mut resp = [0u8; 4096];
@@ -646,6 +704,11 @@ pub unsafe extern "C" fn zl_subscribe(
                             thread::sleep(Duration::from_millis(reconnect_backoff_ms));
                             reconnect_backoff_ms =
                                 (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                            reconnect_failures = reconnect_failures.saturating_add(1);
+                            if reconnect_failures >= STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK
+                            {
+                                use_pull_fallback = true;
+                            }
                         }
                         Err(_) => {
                             thread::sleep(Duration::from_millis(20));
