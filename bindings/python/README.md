@@ -56,3 +56,15 @@ python3 -m unittest -v bindings/python/tests/test_smoke.py
 ```
 
 Daemon smoke includes both standard publish and buffer-ref publish paths.
+
+## Standard schema helpers
+
+The package exports common schema IDs and codec helpers for cross-process consistency:
+
+- `SCHEMA_INT64_LE_V1`, `SCHEMA_FLOAT64_LE_V1`, `SCHEMA_UTF8_STRING_V1`, `SCHEMA_IMAGE_FRAME_V1`
+- `encode_int64/decode_int64`
+- `encode_float64/decode_float64`
+- `encode_string/decode_string`
+- `ImageMeta` (JSON metadata helper for image frame side-channel)
+
+Schema definitions are documented under `docs/schemas/`.

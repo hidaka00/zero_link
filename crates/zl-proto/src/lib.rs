@@ -6,6 +6,14 @@ pub enum MessageType {
     Control = 3,
 }
 
+pub mod schema {
+    pub const RAW_BYTES_V1: u32 = 1;
+    pub const INT64_LE_V1: u32 = 1001;
+    pub const FLOAT64_LE_V1: u32 = 1002;
+    pub const UTF8_STRING_V1: u32 = 1003;
+    pub const IMAGE_FRAME_V1: u32 = 1101;
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MessageHeader {

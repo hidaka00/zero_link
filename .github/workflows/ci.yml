@@ -90,7 +90,7 @@ jobs:
           python bindings/python/examples/daemon_demo.py
           ZEROLINK_PY_SMOKE_DAEMON=1 \
           ZEROLINK_PY_ENDPOINT=daemon://local \
-          python -m unittest -v bindings/python/tests/test_smoke.py
+          python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
           kill "$pid"
           wait "$pid" || true
 
@@ -233,7 +233,7 @@ jobs:
             & $venvPython -m pip install -e bindings/python
             $env:ZEROLINK_PY_SMOKE_DAEMON = "1"
             $env:ZEROLINK_PY_ENDPOINT = "daemon://local"
-            & $venvPython -m unittest -v bindings/python/tests/test_smoke.py
+            & $venvPython -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
             if ($LASTEXITCODE -ne 0) { throw "python daemon smoke failed" }
           } catch {
             Write-Host "Windows daemon smoke failed: $($_.Exception.Message)"
@@ -271,7 +271,7 @@ jobs:
           source .venv-zerolink-ci/bin/activate
           python -m pip install -e bindings/python
           python bindings/python/examples/pubsub.py
-          python -m unittest -v bindings/python/tests/test_smoke.py
+          python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
 
   nightly-soak:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
