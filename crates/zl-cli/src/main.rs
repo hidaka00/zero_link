@@ -49,6 +49,7 @@ extern "C" fn payload_callback(
 fn usage() {
     println!("zl-cli commands:");
     println!("  smoke-pubsub [topic] [message]");
+    println!("  smoke-subscribe [topic] [wait_ms]");
     println!("  smoke-control [topic] [command] [payload]");
     println!("  daemon-health");
     println!("  env: ZL_ENDPOINT (default: local)");
@@ -120,7 +121,7 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
         return 1;
     }
 
-    match rx.recv_timeout(Duration::from_secs(1)) {
+    match rx.recv_timeout(Duration::from_secs(2)) {
         Ok(got) => println!("received: {}", String::from_utf8_lossy(&got)),
         Err(_) => {
             eprintln!("timeout waiting callback");
@@ -186,7 +187,7 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
         return 1;
     }
 
-    match rx.recv_timeout(Duration::from_secs(1)) {
+    match rx.recv_timeout(Duration::from_secs(2)) {
         Ok(got) => match serde_cbor::from_slice::<ControlEnvelope>(&got) {
             Ok(decoded) => {
                 println!("control.command={}", decoded.command);
@@ -210,6 +211,39 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
         }
     }
 
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
+    0
+}
+
+fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("invalid topic");
+            return 2;
+        }
+    };
+
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("zl_client_open failed");
+            return 1;
+        }
+    };
+
+    let (tx, _rx) = mpsc::channel::<Vec<u8>>();
+    let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data) };
+    if !matches!(st, ZlStatus::Ok) {
+        eprintln!("zl_subscribe failed");
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    std::thread::sleep(Duration::from_millis(wait_ms));
     let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
     let _ = unsafe { zl_client_close(client) };
     0
@@ -269,6 +303,14 @@ fn main() {
             let topic = args.get(2).map_or("audio/asr/text", String::as_str);
             let message = args.get(3).map_or("hello", String::as_str);
             smoke_pubsub(topic, message)
+        }
+        "smoke-subscribe" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let wait_ms = args
+                .get(3)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
+            smoke_subscribe(topic, wait_ms)
         }
         "smoke-control" => {
             let topic = args.get(2).map_or("_sys/control", String::as_str);

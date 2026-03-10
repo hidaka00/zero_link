@@ -57,8 +57,13 @@ jobs:
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-stream
           ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 target/debug/zl-cli smoke-pubsub audio/asr/text ci-daemon-fallback
+          ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 ZL_STREAM_TEST_FORCE_CONNECT_FAIL=1 target/debug/zl-cli smoke-subscribe audio/asr/text 400
+          ZL_ENDPOINT=daemon://local ZL_DAEMON_SUBSCRIBE_MODE=stream ZL_STREAM_FALLBACK_THRESHOLD=1 ZL_STREAM_TEST_FORCE_REOPEN_FAIL=1 target/debug/zl-cli smoke-subscribe audio/asr/text 400
           health_out="$(ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health)"
           echo "$health_out"
+          echo "$health_out" | grep -q '^stream_fallback_to_pull_count=3$'
+          echo "$health_out" | grep -q '^stream_fallback_connect_count=1$'
+          echo "$health_out" | grep -q '^stream_fallback_reopen_count=1$'
           echo "$health_out" | grep -q '^stream_fallback_recv_count=1$'
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-control _sys/control reload '{}'
           kill "$pid"
@@ -110,7 +115,24 @@ jobs:
             $env:ZL_STREAM_FALLBACK_THRESHOLD = "1"
             .\\target\\debug\\zl-cli.exe smoke-pubsub audio/asr/text ci-daemon-win-fallback
             if ($LASTEXITCODE -ne 0) { throw "smoke-pubsub (fallback) failed" }
+            $env:ZL_STREAM_TEST_FORCE_CONNECT_FAIL = "1"
+            .\\target\\debug\\zl-cli.exe smoke-subscribe audio/asr/text 400
+            if ($LASTEXITCODE -ne 0) { throw "smoke-subscribe (fallback connect) failed" }
+            Remove-Item Env:ZL_STREAM_TEST_FORCE_CONNECT_FAIL -ErrorAction SilentlyContinue
+            $env:ZL_STREAM_TEST_FORCE_REOPEN_FAIL = "1"
+            .\\target\\debug\\zl-cli.exe smoke-subscribe audio/asr/text 400
+            if ($LASTEXITCODE -ne 0) { throw "smoke-subscribe (fallback reopen) failed" }
+            Remove-Item Env:ZL_STREAM_TEST_FORCE_REOPEN_FAIL -ErrorAction SilentlyContinue
             $healthOut = .\\target\\debug\\zl-cli.exe daemon-health | Out-String
+            if (-not ($healthOut -match 'stream_fallback_to_pull_count=3')) {
+              throw "stream_fallback_to_pull_count was not 3"
+            }
+            if (-not ($healthOut -match 'stream_fallback_connect_count=1')) {
+              throw "stream_fallback_connect_count was not 1"
+            }
+            if (-not ($healthOut -match 'stream_fallback_reopen_count=1')) {
+              throw "stream_fallback_reopen_count was not 1"
+            }
             if (-not ($healthOut -match 'stream_fallback_recv_count=1')) {
               throw "stream_fallback_recv_count was not 1"
             }

@@ -349,6 +349,20 @@ fn stream_reconnect_failures_before_pull_fallback() -> u32 {
         .unwrap_or(STREAM_RECONNECT_FAILURES_BEFORE_PULL_FALLBACK)
 }
 
+fn stream_test_force_connect_fail() -> bool {
+    matches!(
+        std::env::var("ZL_STREAM_TEST_FORCE_CONNECT_FAIL"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
+fn stream_test_force_reopen_fail() -> bool {
+    matches!(
+        std::env::var("ZL_STREAM_TEST_FORCE_REOPEN_FAIL"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
 fn report_stream_fallback_metric(endpoint: &str, reason: &str) {
     let req = format!("metric:stream_fallback_to_pull:{reason}");
     let mut resp = [0u8; 256];
@@ -601,7 +615,13 @@ pub unsafe extern "C" fn zl_subscribe(
             let poll_req = poll_request_body(&topic_str);
             thread::spawn(move || {
                 let fallback_threshold = stream_reconnect_failures_before_pull_fallback();
-                let mut active_session = Some(session);
+                let force_connect_fail = stream_test_force_connect_fail();
+                let force_reopen_fail = stream_test_force_reopen_fail();
+                let mut active_session = if force_connect_fail || force_reopen_fail {
+                    None
+                } else {
+                    Some(session)
+                };
                 let mut reconnect_backoff_ms = 50u64;
                 let mut reconnect_failures = 0u32;
                 let mut use_pull_fallback = false;
@@ -648,6 +668,22 @@ pub unsafe extern "C" fn zl_subscribe(
                     }
 
                     if active_session.is_none() {
+                        if force_connect_fail {
+                            thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                            reconnect_backoff_ms =
+                                (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                            reconnect_failures = reconnect_failures.saturating_add(1);
+                            if reconnect_failures >= fallback_threshold {
+                                activate_pull_fallback(
+                                    &endpoint,
+                                    &mut use_pull_fallback,
+                                    &mut fallback_reported,
+                                    "connect",
+                                );
+                            }
+                            continue;
+                        }
+
                         let new_session = match ControlSession::connect(&endpoint) {
                             Ok(v) => v,
                             Err(_) => {
@@ -666,6 +702,21 @@ pub unsafe extern "C" fn zl_subscribe(
                                 continue;
                             }
                         };
+                        if force_reopen_fail {
+                            thread::sleep(Duration::from_millis(reconnect_backoff_ms));
+                            reconnect_backoff_ms =
+                                (reconnect_backoff_ms.saturating_mul(2)).min(1_000);
+                            reconnect_failures = reconnect_failures.saturating_add(1);
+                            if reconnect_failures >= fallback_threshold {
+                                activate_pull_fallback(
+                                    &endpoint,
+                                    &mut use_pull_fallback,
+                                    &mut fallback_reported,
+                                    "reopen",
+                                );
+                            }
+                            continue;
+                        }
                         let mut reopen_resp = [0u8; 512];
                         let reopen_len = match new_session.request(&sub_req, &mut reopen_resp) {
                             Ok(v) => v,
