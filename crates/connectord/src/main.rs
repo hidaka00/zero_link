@@ -647,7 +647,7 @@ fn start_daemon_control_server(
                         wide.as_ptr(),
                         PIPE_ACCESS_DUPLEX,
                         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                        1,
+                        16,
                         65536,
                         65536,
                         0,
