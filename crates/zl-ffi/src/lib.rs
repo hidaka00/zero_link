@@ -1,5 +1,6 @@
 use core::ffi::{c_char, c_void};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::sync::mpsc::{self, Sender};
@@ -318,6 +319,19 @@ fn poll_request_body(topic: &str) -> Vec<u8> {
     req
 }
 
+fn daemon_response_ok(resp: &[u8]) -> Result<(), ZlStatus> {
+    let parsed: Value = serde_json::from_slice(resp).map_err(|_| ZlStatus::Internal)?;
+    let status = parsed
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or(ZlStatus::Internal)?;
+    if status == "ok" {
+        Ok(())
+    } else {
+        Err(ZlStatus::Internal)
+    }
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
@@ -352,8 +366,13 @@ pub unsafe extern "C" fn zl_client_open(
         let Some(endpoint_str) = daemon_endpoint.as_deref() else {
             return ZlStatus::InvalidArg;
         };
-        if let Err(err) = zl_ipc::control_request(endpoint_str, b"health", &mut [0u8; 256]) {
-            return from_ipc_error(err);
+        let mut resp = [0u8; 256];
+        let len = match zl_ipc::control_request(endpoint_str, b"health", &mut resp) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        if let Err(s) = daemon_response_ok(&resp[..len]) {
+            return s;
         }
     }
 
@@ -459,8 +478,13 @@ pub unsafe extern "C" fn zl_publish(
             Ok(v) => v,
             Err(s) => return s,
         };
-        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 1024]) {
-            return from_ipc_error(err);
+        let mut resp = [0u8; 1024];
+        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        if let Err(s) = daemon_response_ok(&resp[..len]) {
+            return s;
         }
     }
 
@@ -506,8 +530,13 @@ pub unsafe extern "C" fn zl_subscribe(
     let (stop_tx, stop_rx) = mpsc::channel();
     let join = if let Some(endpoint) = daemon_endpoint {
         let sub_req = subscribe_request_body(&topic_str);
-        if let Err(err) = zl_ipc::control_request(&endpoint, &sub_req, &mut [0u8; 512]) {
-            return from_ipc_error(err);
+        let mut sub_resp = [0u8; 512];
+        let sub_len = match zl_ipc::control_request(&endpoint, &sub_req, &mut sub_resp) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        if let Err(s) = daemon_response_ok(&sub_resp[..sub_len]) {
+            return s;
         }
         let poll_req = poll_request_body(&topic_str);
         thread::spawn(move || loop {
@@ -625,8 +654,13 @@ pub unsafe extern "C" fn zl_unsubscribe(client: *mut ZlClient, topic: *const c_c
     let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = unsubscribe_request_body(topic_str);
-        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 512]) {
-            return from_ipc_error(err);
+        let mut resp = [0u8; 512];
+        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        if let Err(s) = daemon_response_ok(&resp[..len]) {
+            return s;
         }
     }
 
@@ -749,8 +783,13 @@ pub unsafe extern "C" fn zl_send_control(
     let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = control_request_body(&body);
-        if let Err(err) = zl_ipc::control_request(endpoint, &req, &mut [0u8; 512]) {
-            return from_ipc_error(err);
+        let mut resp = [0u8; 512];
+        let len = match zl_ipc::control_request(endpoint, &req, &mut resp) {
+            Ok(v) => v,
+            Err(err) => return from_ipc_error(err),
+        };
+        if let Err(s) = daemon_response_ok(&resp[..len]) {
+            return s;
         }
     }
 
