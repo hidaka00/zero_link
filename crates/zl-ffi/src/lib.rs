@@ -25,6 +25,11 @@ enum ClientTransport {
     InMemory(InMemoryTransport),
 }
 
+enum EndpointMode {
+    InMemory,
+    Daemon,
+}
+
 struct InMemoryTransport {
     router: Router,
 }
@@ -219,10 +224,20 @@ fn encode_control_cbor(command: &str, payload: &[u8]) -> Result<Vec<u8>, ZlStatu
     serde_cbor::to_vec(&envelope).map_err(|_| ZlStatus::Internal)
 }
 
+fn parse_endpoint_mode(endpoint: Option<&str>) -> Result<EndpointMode, ZlStatus> {
+    match endpoint {
+        None => Ok(EndpointMode::InMemory),
+        Some("local" | "in-memory") => Ok(EndpointMode::InMemory),
+        Some(v) if v.starts_with("daemon://") => Ok(EndpointMode::Daemon),
+        Some(_) => Err(ZlStatus::InvalidArg),
+    }
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
 /// point to a valid NUL-terminated UTF-8 string for the duration of the call.
+/// Supported endpoint values are `local`, `in-memory`, and `daemon://...`.
 pub unsafe extern "C" fn zl_client_open(
     endpoint: *const c_char,
     out_client: *mut *mut ZlClient,
@@ -231,13 +246,23 @@ pub unsafe extern "C" fn zl_client_open(
         return ZlStatus::InvalidArg;
     }
 
-    // MVP: endpoint is accepted for ABI compatibility but not yet used.
-    if !endpoint.is_null() {
+    let endpoint_mode = if endpoint.is_null() {
+        EndpointMode::InMemory
+    } else {
         // Safety: pointer is provided by caller and checked for null above.
         let parsed = unsafe { parse_cstr(endpoint) };
-        if parsed.is_err() {
-            return ZlStatus::InvalidArg;
+        let endpoint_str = match parsed {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        match parse_endpoint_mode(Some(endpoint_str)) {
+            Ok(mode) => mode,
+            Err(s) => return s,
         }
+    };
+
+    if matches!(endpoint_mode, EndpointMode::Daemon) {
+        return ZlStatus::IpcDisconnected;
     }
 
     let client = Box::new(ZlClient {
@@ -650,6 +675,24 @@ mod tests {
 
         let st = unsafe { zl_client_close(client) };
         assert!(matches!(st, ZlStatus::Ok));
+    }
+
+    #[test]
+    fn ffi_open_with_daemon_endpoint_returns_ipc_disconnected() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("daemon://local").expect("valid cstring");
+        let st = unsafe { zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient) };
+        assert!(matches!(st, ZlStatus::IpcDisconnected));
+        assert!(client.is_null());
+    }
+
+    #[test]
+    fn ffi_open_with_invalid_endpoint_returns_invalid_arg() {
+        let mut client: *mut ZlClient = std::ptr::null_mut();
+        let endpoint = CString::new("tcp://127.0.0.1:9999").expect("valid cstring");
+        let st = unsafe { zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient) };
+        assert!(matches!(st, ZlStatus::InvalidArg));
+        assert!(client.is_null());
     }
 
     #[test]
