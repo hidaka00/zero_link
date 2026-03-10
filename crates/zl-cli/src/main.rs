@@ -54,9 +54,27 @@ extern "C" fn payload_callback(
     let _ = tx.send(bytes.to_vec());
 }
 
+extern "C" fn trace_callback(
+    _topic: *const c_char,
+    header: *const ZlMsgHeader,
+    _payload: *const c_void,
+    _buf_ref: *const zl_ffi::ZlBufferRef,
+    user_data: *mut c_void,
+) {
+    let tx = unsafe { &*(user_data as *const mpsc::Sender<u64>) };
+    if header.is_null() {
+        let _ = tx.send(0);
+        return;
+    }
+    let trace = unsafe { (*header).trace_id };
+    let _ = tx.send(trace);
+}
+
 fn usage() {
     println!("zl-cli commands:");
     println!("  smoke-pubsub [topic] [message]");
+    println!("  smoke-burst [topic] [count]");
+    println!("  smoke-trace [topic] [trace_id]");
     println!("  smoke-subscribe [topic] [wait_ms]");
     println!("  smoke-control [topic] [command] [payload]");
     println!("  daemon-health");
@@ -224,6 +242,128 @@ fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
     0
 }
 
+fn smoke_burst(topic: &str, count: usize) -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => return 2,
+    };
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let user_data = &tx as *const mpsc::Sender<Vec<u8>> as *mut c_void;
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(payload_callback), user_data) };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    for i in 0..count {
+        let msg = format!("burst-{i}");
+        let bytes = msg.as_bytes();
+        let header = ZlMsgHeader {
+            msg_type: 2,
+            timestamp_ns: 0,
+            size: bytes.len() as u32,
+            schema_id: 1,
+            trace_id: i as u64 + 1,
+        };
+        let st = unsafe {
+            zl_publish(
+                client,
+                topic_c.as_ptr(),
+                &header as *const ZlMsgHeader,
+                bytes.as_ptr() as *const c_void,
+                bytes.len() as u32,
+                std::ptr::null(),
+            )
+        };
+        if !matches!(st, ZlStatus::Ok) {
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
+            return 1;
+        }
+    }
+
+    for _ in 0..count {
+        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
+            return 1;
+        }
+    }
+
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
+    println!("burst_received={count}");
+    0
+}
+
+fn smoke_trace(topic: &str, trace_id: u64) -> i32 {
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
+    let topic_c = match CString::new(topic) {
+        Ok(v) => v,
+        Err(_) => return 2,
+    };
+    let client = match open_client(&endpoint) {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+
+    let (tx, rx) = mpsc::channel::<u64>();
+    let user_data = &tx as *const mpsc::Sender<u64> as *mut c_void;
+    let st = unsafe { zl_subscribe(client, topic_c.as_ptr(), Some(trace_callback), user_data) };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    let bytes = b"trace";
+    let header = ZlMsgHeader {
+        msg_type: 2,
+        timestamp_ns: 0,
+        size: bytes.len() as u32,
+        schema_id: 1,
+        trace_id,
+    };
+    let st = unsafe {
+        zl_publish(
+            client,
+            topic_c.as_ptr(),
+            &header as *const ZlMsgHeader,
+            bytes.as_ptr() as *const c_void,
+            bytes.len() as u32,
+            std::ptr::null(),
+        )
+    };
+    if !matches!(st, ZlStatus::Ok) {
+        let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+        let _ = unsafe { zl_client_close(client) };
+        return 1;
+    }
+
+    let got = match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+            let _ = unsafe { zl_client_close(client) };
+            return 1;
+        }
+    };
+
+    let _ = unsafe { zl_unsubscribe(client, topic_c.as_ptr()) };
+    let _ = unsafe { zl_client_close(client) };
+    println!("trace_id={got}");
+    if got == trace_id {
+        0
+    } else {
+        1
+    }
+}
+
 fn smoke_subscribe(topic: &str, wait_ms: u64) -> i32 {
     let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
     let topic_c = match CString::new(topic) {
@@ -335,6 +475,22 @@ fn main() {
             let topic = args.get(2).map_or("audio/asr/text", String::as_str);
             let message = args.get(3).map_or("hello", String::as_str);
             smoke_pubsub(topic, message)
+        }
+        "smoke-burst" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let count = args
+                .get(3)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(50);
+            smoke_burst(topic, count)
+        }
+        "smoke-trace" => {
+            let topic = args.get(2).map_or("audio/asr/text", String::as_str);
+            let trace_id = args
+                .get(3)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(42);
+            smoke_trace(topic, trace_id)
         }
         "smoke-subscribe" => {
             let topic = args.get(2).map_or("audio/asr/text", String::as_str);

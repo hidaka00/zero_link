@@ -239,7 +239,8 @@ ABI 互換ポリシー:
 - `daemon-health` で publish/poll/stream の集計カウンタと `TopicStats`（`p50/p95 latency`, `throughput_per_sec`, `queue_depth`, `drops`）を取得可能。
 - `throughput_per_sec` は publish の 1 秒窓カウントで算出。
 - M3 進捗: `zl-ffi` の buffer 実体管理を `zl-shm::ShmManager` に統合済み（hard limit / alloc / release / range read）。
-- 残タスク: OS ネイティブ shared memory backend への置換と A-01〜A-05 の統合試験通過。
+- CI に A-01/A-05 の最小スモーク（`smoke-burst`, `smoke-trace`）を追加済み。
+- 残タスク: OS ネイティブ shared memory backend への置換と A-02/A-03/A-04 を含む統合試験の拡張。
 
 ## 10. MVP 固定値（実装開始前に確定）
 
