@@ -1,7 +1,11 @@
 use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::sync::mpsc;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use zl_ipc::connect_control_channel;
+use zl_ipc::{connect_control_channel, daemon_socket_path};
 
 fn usage() {
     println!("connectord commands:");
@@ -57,6 +61,83 @@ fn control_self_check(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
+struct DaemonControlServer {
+    stop_tx: mpsc::Sender<()>,
+    join: JoinHandle<()>,
+}
+
+impl DaemonControlServer {
+    fn stop(self) {
+        let _ = self.stop_tx.send(());
+        let _ = self.join.join();
+    }
+}
+
+fn start_daemon_control_server(endpoint: &str) -> Result<Option<DaemonControlServer>, String> {
+    if !endpoint.starts_with("daemon://") {
+        return Ok(None);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::net::UnixListener;
+
+        let path = daemon_socket_path(endpoint)
+            .map_err(|e| format!("invalid daemon endpoint {endpoint}: {e:?}"))?;
+        let _ = fs::remove_file(path);
+        let listener =
+            UnixListener::bind(path).map_err(|e| format!("daemon bind failed at {path}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set_nonblocking failed: {e}"))?;
+
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let path_owned = path.to_string();
+        let join = thread::spawn(move || {
+            loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => loop {
+                        let mut len_buf = [0u8; 4];
+                        if stream.read_exact(&mut len_buf).is_err() {
+                            break;
+                        }
+                        let len = u32::from_le_bytes(len_buf) as usize;
+                        let mut payload = vec![0u8; len];
+                        if stream.read_exact(&mut payload).is_err() {
+                            break;
+                        }
+                        if stream.write_all(&len_buf).is_err() {
+                            break;
+                        }
+                        if stream.write_all(&payload).is_err() {
+                            break;
+                        }
+                        if stream.flush().is_err() {
+                            break;
+                        }
+                    },
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(20)),
+                }
+            }
+            let _ = fs::remove_file(path_owned);
+        });
+
+        Ok(Some(DaemonControlServer { stop_tx, join }))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = endpoint;
+        Err("daemon control server is only supported on unix in current MVP".to_string())
+    }
+}
+
 fn run_health() -> i32 {
     println!("{{\"status\":\"ok\",\"service\":\"connectord\",\"mode\":\"in-memory\"}}");
     0
@@ -88,8 +169,18 @@ fn run_serve(args: &[String]) -> i32 {
         eprintln!("--tick-ms must be > 0");
         return 2;
     }
+    let daemon_server = match start_daemon_control_server(&control_endpoint) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{msg}");
+            return 1;
+        }
+    };
     if let Err(msg) = control_self_check(&control_endpoint) {
         eprintln!("{msg}");
+        if let Some(server) = daemon_server {
+            server.stop();
+        }
         return 1;
     }
 
@@ -106,6 +197,9 @@ fn run_serve(args: &[String]) -> i32 {
         if let Some(limit_ms) = max_runtime_ms {
             if start.elapsed() >= Duration::from_millis(limit_ms) {
                 println!("connectord: stopping (max runtime reached)");
+                if let Some(server) = daemon_server {
+                    server.stop();
+                }
                 return 0;
             }
         }

@@ -38,6 +38,17 @@ jobs:
       - name: Connectord lifecycle smoke
         run: cargo run -p connectord -- serve --max-runtime-ms 250 --tick-ms 50
 
+      - name: Daemon endpoint smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p connectord -- serve --control-endpoint daemon://local --max-runtime-ms 1500 --tick-ms 50 > /tmp/connectord-daemon.log 2>&1 &
+          pid=$!
+          sleep 0.4
+          ZL_ENDPOINT=daemon://local cargo run -p zl-cli -- smoke-pubsub audio/asr/text ci-daemon
+          ZL_ENDPOINT=daemon://local cargo run -p zl-cli -- smoke-control _sys/control reload '{}'
+          wait "$pid"
+
       - name: Smoke pubsub
         run: cargo run -p zl-cli -- smoke-pubsub audio/asr/text ci-smoke
 

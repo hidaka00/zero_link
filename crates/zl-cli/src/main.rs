@@ -37,9 +37,14 @@ fn usage() {
     println!("zl-cli commands:");
     println!("  smoke-pubsub [topic] [message]");
     println!("  smoke-control [topic] [command] [payload]");
+    println!("  env: ZL_ENDPOINT (default: local)");
 }
 
-fn open_client(endpoint: &CString) -> Result<*mut ZlClient, ZlStatus> {
+fn open_client(endpoint: &str) -> Result<*mut ZlClient, ZlStatus> {
+    let endpoint = match CString::new(endpoint) {
+        Ok(v) => v,
+        Err(_) => return Err(ZlStatus::InvalidArg),
+    };
     let mut client: *mut ZlClient = std::ptr::null_mut();
     let st = unsafe { zl_client_open(endpoint.as_ptr(), &mut client as *mut *mut ZlClient) };
     if matches!(st, ZlStatus::Ok) {
@@ -50,7 +55,7 @@ fn open_client(endpoint: &CString) -> Result<*mut ZlClient, ZlStatus> {
 }
 
 fn smoke_pubsub(topic: &str, message: &str) -> i32 {
-    let endpoint = CString::new("local").expect("fixed endpoint literal");
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
     let topic_c = match CString::new(topic) {
         Ok(v) => v,
         Err(_) => {
@@ -117,7 +122,7 @@ fn smoke_pubsub(topic: &str, message: &str) -> i32 {
 }
 
 fn smoke_control(topic: &str, command: &str, payload: &str) -> i32 {
-    let endpoint = CString::new("local").expect("fixed endpoint literal");
+    let endpoint = env::var("ZL_ENDPOINT").unwrap_or_else(|_| "local".to_string());
     let topic_c = match CString::new(topic) {
         Ok(v) => v,
         Err(_) => {

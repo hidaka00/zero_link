@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::io::{Read, Write};
 use std::sync::Mutex;
 
 #[derive(Debug)]
@@ -10,6 +11,7 @@ pub enum IpcError {
 }
 
 pub type IpcResult<T> = Result<T, IpcError>;
+pub const DAEMON_LOCAL_SOCKET_PATH: &str = "/tmp/zerolink_connectord.sock";
 
 pub trait ControlChannel: Send + Sync {
     fn send(&self, _data: &[u8]) -> IpcResult<()> {
@@ -47,12 +49,68 @@ impl ControlChannel for LoopbackControlChannel {
     }
 }
 
+#[cfg(unix)]
+struct UnixSocketControlChannel {
+    stream: Mutex<std::os::unix::net::UnixStream>,
+}
+
+#[cfg(unix)]
+impl ControlChannel for UnixSocketControlChannel {
+    fn send(&self, data: &[u8]) -> IpcResult<()> {
+        let mut stream = self.stream.lock().map_err(|_| IpcError::NotImplemented)?;
+        let len = u32::try_from(data.len()).map_err(|_| IpcError::BufferTooSmall)?;
+        stream
+            .write_all(&len.to_le_bytes())
+            .map_err(|_| IpcError::Disconnected)?;
+        stream.write_all(data).map_err(|_| IpcError::Disconnected)?;
+        stream.flush().map_err(|_| IpcError::Disconnected)?;
+        Ok(())
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> IpcResult<usize> {
+        let mut stream = self.stream.lock().map_err(|_| IpcError::NotImplemented)?;
+        let mut len_bytes = [0u8; 4];
+        stream
+            .read_exact(&mut len_bytes)
+            .map_err(|_| IpcError::Disconnected)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if buf.len() < len {
+            return Err(IpcError::BufferTooSmall);
+        }
+        stream
+            .read_exact(&mut buf[..len])
+            .map_err(|_| IpcError::Disconnected)?;
+        Ok(len)
+    }
+}
+
+pub fn daemon_socket_path(endpoint: &str) -> IpcResult<&'static str> {
+    match endpoint {
+        "daemon://local" => Ok(DAEMON_LOCAL_SOCKET_PATH),
+        v if v.starts_with("daemon://") => Err(IpcError::InvalidEndpoint),
+        _ => Err(IpcError::InvalidEndpoint),
+    }
+}
+
 pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChannel>> {
     if endpoint == "inproc://loopback" {
         return Ok(Box::new(LoopbackControlChannel::default()));
     }
     if endpoint.starts_with("daemon://") {
-        return Err(IpcError::Disconnected);
+        #[cfg(unix)]
+        {
+            let path = daemon_socket_path(endpoint)?;
+            let stream = std::os::unix::net::UnixStream::connect(path)
+                .map_err(|_| IpcError::Disconnected)?;
+            return Ok(Box::new(UnixSocketControlChannel {
+                stream: Mutex::new(stream),
+            }));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = endpoint;
+            return Err(IpcError::Disconnected);
+        }
     }
     Err(IpcError::InvalidEndpoint)
 }
