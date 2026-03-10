@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::sync::Mutex;
 
@@ -87,6 +89,38 @@ impl ControlChannel for UnixSocketControlChannel {
     }
 }
 
+#[cfg(windows)]
+struct WindowsPipeControlChannel {
+    file: Mutex<std::fs::File>,
+}
+
+#[cfg(windows)]
+impl ControlChannel for WindowsPipeControlChannel {
+    fn send(&self, data: &[u8]) -> IpcResult<()> {
+        let mut file = self.file.lock().map_err(|_| IpcError::NotImplemented)?;
+        let len = u32::try_from(data.len()).map_err(|_| IpcError::BufferTooSmall)?;
+        file.write_all(&len.to_le_bytes())
+            .map_err(|_| IpcError::Disconnected)?;
+        file.write_all(data).map_err(|_| IpcError::Disconnected)?;
+        file.flush().map_err(|_| IpcError::Disconnected)?;
+        Ok(())
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> IpcResult<usize> {
+        let mut file = self.file.lock().map_err(|_| IpcError::NotImplemented)?;
+        let mut len_bytes = [0u8; 4];
+        file.read_exact(&mut len_bytes)
+            .map_err(|_| IpcError::Disconnected)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if buf.len() < len {
+            return Err(IpcError::BufferTooSmall);
+        }
+        file.read_exact(&mut buf[..len])
+            .map_err(|_| IpcError::Disconnected)?;
+        Ok(len)
+    }
+}
+
 pub fn daemon_transport_target(endpoint: &str) -> IpcResult<&'static str> {
     match endpoint {
         "daemon://local" => Ok(DAEMON_LOCAL_TRANSPORT_TARGET),
@@ -110,7 +144,18 @@ pub fn connect_control_channel(endpoint: &str) -> IpcResult<Box<dyn ControlChann
                 stream: Mutex::new(stream),
             }));
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(_target)
+                .map_err(|_| IpcError::Disconnected)?;
+            return Ok(Box::new(WindowsPipeControlChannel {
+                file: Mutex::new(file),
+            }));
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = _target;
             return Err(IpcError::Disconnected);
