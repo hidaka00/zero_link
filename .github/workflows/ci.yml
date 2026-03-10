@@ -87,6 +87,7 @@ jobs:
           python3 -m venv .venv-zerolink-daemon-ci
           source .venv-zerolink-daemon-ci/bin/activate
           python -m pip install -e bindings/python
+          python bindings/python/examples/daemon_demo.py
           ZEROLINK_PY_SMOKE_DAEMON=1 \
           ZEROLINK_PY_ENDPOINT=daemon://local \
           python -m unittest -v bindings/python/tests/test_smoke.py
