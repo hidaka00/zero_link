@@ -244,7 +244,8 @@ ABI 互換ポリシー:
 - `zl-shm` backend は Unix で `shm_open + mmap`、Windows で `CreateFileMapping/MapViewOfFile` を利用し、利用不可環境では heap fallback を使用。
 - CI に A-01〜A-05 を連続実行する準高負荷スモーク（`smoke-acceptance`）を追加済み。
 - CI に `nightly-soak`（schedule / workflow_dispatch）を追加し、A-01〜A-05 を 10 分連続実行する長時間検証を運用開始。
-- 残タスク: nightly soak の閾値管理（throughput / latency / drop の fail gate）を段階導入する。
+- nightly soak に `dropped_messages` / `p95_latency_us` / `throughput_per_sec` の fail gate を追加済み（環境変数で閾値調整可能）。
+- 残タスク: 運用データに合わせて fail gate の既定閾値を段階的に引き締める。
 
 ## 10. MVP 固定値（実装開始前に確定）
 

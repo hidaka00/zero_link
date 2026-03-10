@@ -187,6 +187,10 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ZL_SOAK_MAX_DROPPED: "0"
+      ZL_SOAK_MAX_P95_US: "200000"
+      ZL_SOAK_MIN_THROUGHPUT: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -213,7 +217,30 @@ jobs:
           while [ "$SECONDS" -lt "$end_ts" ]; do
             ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-acceptance audio/asr/text 2 200
           done
-          ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health
+          health_out="$(ZL_ENDPOINT=daemon://local target/debug/zl-cli daemon-health)"
+          echo "$health_out"
+
+          dropped="$(echo "$health_out" | awk -F= '/^dropped_messages=/{print $2}')"
+          p95_us="$(echo "$health_out" | awk -F= '/^p95_latency_us=/{print $2}')"
+          throughput="$(echo "$health_out" | awk -F= '/^throughput_per_sec=/{print $2}')"
+
+          if [ -z "$dropped" ] || [ -z "$p95_us" ] || [ -z "$throughput" ]; then
+            echo "missing soak metrics in daemon-health output"
+            exit 1
+          fi
+          if [ "$dropped" -gt "${ZL_SOAK_MAX_DROPPED}" ]; then
+            echo "dropped_messages gate failed: $dropped > ${ZL_SOAK_MAX_DROPPED}"
+            exit 1
+          fi
+          if [ "$p95_us" -gt "${ZL_SOAK_MAX_P95_US}" ]; then
+            echo "p95_latency_us gate failed: $p95_us > ${ZL_SOAK_MAX_P95_US}"
+            exit 1
+          fi
+          if [ "$throughput" -lt "${ZL_SOAK_MIN_THROUGHPUT}" ]; then
+            echo "throughput_per_sec gate failed: $throughput < ${ZL_SOAK_MIN_THROUGHPUT}"
+            exit 1
+          fi
+
           kill "$pid"
           wait "$pid" || true
 
