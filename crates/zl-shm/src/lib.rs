@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use std::ffi::CString;
 #[cfg(unix)]
 use std::os::fd::RawFd;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Memory::{
+    CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+    MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
+};
 
 #[derive(Debug)]
 pub enum ShmError {
@@ -38,6 +45,12 @@ enum BufferSlot {
         name: CString,
     },
     Heap(Box<[u8]>),
+    #[cfg(windows)]
+    WindowsMap {
+        view: MEMORY_MAPPED_VIEW_ADDRESS,
+        len: usize,
+        mapping: HANDLE,
+    },
 }
 
 pub struct ShmManager {
@@ -112,6 +125,37 @@ impl ShmManager {
         Ok((id, ptr))
     }
 
+    #[cfg(windows)]
+    fn alloc_windows_map(&mut self, id: u64, size: u32) -> ShmResult<(u64, *mut u8)> {
+        let len = size as usize;
+        let mapping = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null(),
+                PAGE_READWRITE,
+                0,
+                size,
+                std::ptr::null(),
+            )
+        };
+        if mapping.is_null() {
+            return Err(ShmError::ShmExhausted);
+        }
+
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, len) };
+        if view.Value.is_null() {
+            unsafe {
+                CloseHandle(mapping);
+            }
+            return Err(ShmError::ShmExhausted);
+        }
+
+        let ptr = view.Value as *mut u8;
+        self.slots
+            .insert(id, BufferSlot::WindowsMap { view, len, mapping });
+        Ok((id, ptr))
+    }
+
     pub fn alloc(&mut self, size: u32) -> ShmResult<(u64, *mut u8)> {
         if size == 0 {
             return Err(ShmError::InvalidArg);
@@ -141,10 +185,25 @@ impl ShmManager {
         };
         #[cfg(not(unix))]
         let (id, ptr) = {
-            let mut data = vec![0u8; size as usize].into_boxed_slice();
-            let ptr = data.as_mut_ptr();
-            self.slots.insert(id, BufferSlot::Heap(data));
-            (id, ptr)
+            #[cfg(windows)]
+            {
+                match self.alloc_windows_map(id, size) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let mut data = vec![0u8; size as usize].into_boxed_slice();
+                        let ptr = data.as_mut_ptr();
+                        self.slots.insert(id, BufferSlot::Heap(data));
+                        (id, ptr)
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let mut data = vec![0u8; size as usize].into_boxed_slice();
+                let ptr = data.as_mut_ptr();
+                self.slots.insert(id, BufferSlot::Heap(data));
+                (id, ptr)
+            }
         };
 
         self.used_bytes = self.used_bytes.saturating_add(size_u64);
@@ -171,6 +230,14 @@ impl ShmManager {
             BufferSlot::Heap(data) => {
                 self.used_bytes = self.used_bytes.saturating_sub(data.len() as u64);
             }
+            #[cfg(windows)]
+            BufferSlot::WindowsMap { view, len, mapping } => {
+                unsafe {
+                    UnmapViewOfFile(view);
+                    CloseHandle(mapping);
+                }
+                self.used_bytes = self.used_bytes.saturating_sub(len as u64);
+            }
         }
         Ok(())
     }
@@ -196,6 +263,15 @@ impl ShmManager {
                     return Err(ShmError::InvalidRange);
                 }
                 Ok(data[start..end].to_vec())
+            }
+            #[cfg(windows)]
+            BufferSlot::WindowsMap { view, len, .. } => {
+                if end > *len {
+                    return Err(ShmError::InvalidRange);
+                }
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(view.Value as *const u8, *len) };
+                Ok(bytes[start..end].to_vec())
             }
         }
     }
