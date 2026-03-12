@@ -6,7 +6,8 @@ This directory contains language-specific SDK wrappers built on top of the stabl
 
 - `c/include/zerolink_connector.h`: public C header copied from `docs/ffi/zerolink_connector.h`.
 - `python/`: Python SDK (`ctypes`) and smoke examples.
-- `node/`, `csharp/`: reserved for future wrappers.
+- `csharp/`: .NET SDK (P/Invoke) with sample and smoke.
+- `node/`: reserved for future wrapper.
 
 ## Policy
 
