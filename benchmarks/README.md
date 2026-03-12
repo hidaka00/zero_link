@@ -48,10 +48,21 @@ All scenarios for default transports:
 bash benchmarks/runners/run_all.sh
 ```
 
+Daemon payload-size sweep (`zerolink`):
+
+```bash
+bash benchmarks/runners/run_sweep_zerolink_daemon.sh \
+  --payload-sizes 256,512,1024,2048,4096 \
+  --messages 120 \
+  --timeout-ms 10000 \
+  --max-inflight 1
+```
+
 Results:
 
 - Raw: `benchmarks/results/raw/*.json`
 - Summary CSV: `benchmarks/results/summary/latest.csv`
+- Sweep CSV: `benchmarks/results/summary/sweep_zerolink_daemon_latest.csv`
 
 ## Metrics
 
