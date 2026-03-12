@@ -7,6 +7,7 @@ Minimal .NET wrapper over the stable ZeroLink C ABI (`zl_ffi`).
 - `src/Zerolink`: library (`ZerolinkClient`, schema helpers, native interop).
 - `samples/ConsolePubSub`: simple local pub/sub sample.
 - `smoke/ZerolinkSmoke`: CI-oriented smoke entrypoint.
+- `tests/ZerolinkSchemaSmoke`: schema codec smoke (no daemon/native call needed).
 
 ## Prerequisites
 
@@ -32,6 +33,7 @@ Set native library path when needed:
 dotnet build bindings/csharp/src/Zerolink/Zerolink.csproj
 dotnet build bindings/csharp/samples/ConsolePubSub/ConsolePubSub.csproj
 dotnet build bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj
+dotnet build bindings/csharp/tests/ZerolinkSchemaSmoke/ZerolinkSchemaSmoke.csproj
 ```
 
 ## Run sample
@@ -44,6 +46,12 @@ dotnet run --project bindings/csharp/samples/ConsolePubSub/ConsolePubSub.csproj
 
 ```bash
 dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -- local
+```
+
+Schema-only smoke:
+
+```bash
+dotnet run --project bindings/csharp/tests/ZerolinkSchemaSmoke/ZerolinkSchemaSmoke.csproj
 ```
 
 Daemon mode:

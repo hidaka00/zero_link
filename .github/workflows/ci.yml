@@ -27,6 +27,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -54,7 +59,7 @@ jobs:
           export ZL_SMOKE_SUBSCRIBE_SETTLE_MS=150
           export ZL_SMOKE_ACCEPTANCE_STEP_RETRIES=3
           export ZL_SMOKE_ACCEPTANCE_RETRY_BACKOFF_MS=250
-          cargo build -p connectord -p zl-cli
+          cargo build -p connectord -p zl-cli -p zl-ffi
           LOG_PATH="/tmp/connectord-daemon.log"
           ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE=1 target/debug/connectord serve --control-endpoint daemon://local --tick-ms 50 --queue-limit 1000 > "$LOG_PATH" 2>&1 &
           pid=$!
@@ -91,6 +96,8 @@ jobs:
           ZEROLINK_PY_SMOKE_DAEMON=1 \
           ZEROLINK_PY_ENDPOINT=daemon://local \
           python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
+          export ZEROLINK_NATIVE_LIB="$PWD/target/debug/libzl_ffi.so"
+          dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- daemon://local
           kill "$pid"
           wait "$pid" || true
 
@@ -115,7 +122,7 @@ jobs:
           $env:ZL_DAEMON_REQUEST_BACKOFF_MS = "80"
           $env:ZL_DAEMON_SUBSCRIBE_OPEN_RETRIES = "15"
           $env:ZL_DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS = "100"
-          cargo build -p connectord -p zl-cli
+          cargo build -p connectord -p zl-cli -p zl-ffi
           $stdoutLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stdout.log"
           $stderrLog = Join-Path $env:RUNNER_TEMP "connectord-daemon-windows.stderr.log"
           $savedDisconnectFlag = $env:ZL_CONNECTORD_TEST_STREAM_DISCONNECT_ONCE
@@ -235,6 +242,9 @@ jobs:
             $env:ZEROLINK_PY_ENDPOINT = "daemon://local"
             & $venvPython -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
             if ($LASTEXITCODE -ne 0) { throw "python daemon smoke failed" }
+            $env:ZEROLINK_NATIVE_LIB = (Join-Path (Get-Location) "target\\debug\\zl_ffi.dll")
+            dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- daemon://local
+            if ($LASTEXITCODE -ne 0) { throw "csharp daemon smoke failed" }
           } catch {
             Write-Host "Windows daemon smoke failed: $($_.Exception.Message)"
             Show-DaemonLogs
@@ -274,12 +284,6 @@ jobs:
           python bindings/python/examples/scalars_demo.py
           python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
 
-      - name: Setup .NET (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-
       - name: C# binding smoke (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
@@ -287,6 +291,21 @@ jobs:
           set -euo pipefail
           cargo build -p zl-ffi
           export ZEROLINK_NATIVE_LIB="$PWD/target/debug/libzl_ffi.so"
+          dotnet build bindings/csharp/src/Zerolink/Zerolink.csproj -c Release
+          dotnet build bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -c Release
+          dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- local
+
+      - name: C# schema smoke
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
+        run: dotnet run --project bindings/csharp/tests/ZerolinkSchemaSmoke/ZerolinkSchemaSmoke.csproj --configuration Release
+
+      - name: C# binding smoke (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build -p zl-ffi
+          $env:ZEROLINK_NATIVE_LIB = (Join-Path (Get-Location) "target\\debug\\zl_ffi.dll")
           dotnet build bindings/csharp/src/Zerolink/Zerolink.csproj -c Release
           dotnet build bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -c Release
           dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- local
