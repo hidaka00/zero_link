@@ -274,6 +274,23 @@ jobs:
           python bindings/python/examples/scalars_demo.py
           python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
 
+      - name: Setup .NET (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: C# binding smoke (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p zl-ffi
+          export ZEROLINK_NATIVE_LIB="$PWD/target/debug/libzl_ffi.so"
+          dotnet build bindings/csharp/src/Zerolink/Zerolink.csproj -c Release
+          dotnet build bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -c Release
+          dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- local
+
   nightly-soak:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
