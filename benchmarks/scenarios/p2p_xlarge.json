@@ -6,5 +6,6 @@
   "messages": 40,
   "warmup_messages": 10,
   "timeout_ms": 15000,
-  "queue_limit": 8000
+  "queue_limit": 8000,
+  "max_inflight": 1
 }

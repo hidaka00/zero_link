@@ -62,3 +62,6 @@ Each run records:
 - `received_messages`
 - `dropped_messages`
 - `transport`, `scenario`, `timestamp`
+
+Scenario knobs:
+- `max_inflight`: upper bound of in-flight messages (stabilizes daemon comparisons for large payloads).

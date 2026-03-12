@@ -30,6 +30,7 @@ class Scenario:
     warmup_messages: int
     timeout_ms: int
     queue_limit: int
+    max_inflight: int
 
 
 def load_scenario(path: pathlib.Path) -> Scenario:
@@ -43,6 +44,7 @@ def load_scenario(path: pathlib.Path) -> Scenario:
         warmup_messages=int(obj.get("warmup_messages", 0)),
         timeout_ms=int(obj.get("timeout_ms", 5000)),
         queue_limit=int(obj.get("queue_limit", 2000)),
+        max_inflight=max(1, int(obj.get("max_inflight", 64))),
     )
 
 
@@ -122,8 +124,19 @@ def run_zerolink(s: Scenario) -> dict[str, Any]:
                 client.publish(s.topic, payload, header=MsgHeader(trace_id=trace))
 
             start_ns = time.perf_counter_ns()
+            send_deadline = time.time() + (s.timeout_ms / 1000.0)
             for i in range(s.messages):
                 trace_id = i + 1
+                while True:
+                    with lock:
+                        inflight = len(sent_at_ns)
+                    if inflight < s.max_inflight:
+                        break
+                    if time.time() >= send_deadline:
+                        break
+                    time.sleep(0.0005)
+                if time.time() >= send_deadline:
+                    break
                 with lock:
                     sent_at_ns[trace_id] = time.perf_counter_ns()
                 client.publish(s.topic, payload, header=MsgHeader(trace_id=trace_id))
@@ -186,8 +199,25 @@ def run_zeromq(s: Scenario) -> dict[str, Any]:
     time.sleep(0.05)
 
     start_ns = time.perf_counter_ns()
+    send_deadline = time.time() + (s.timeout_ms / 1000.0)
     for i in range(s.messages):
         trace = i + 1
+        while len(sent_at_ns) >= s.max_inflight:
+            try:
+                msg = sub.recv(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                time.sleep(0.0005)
+                continue
+            if len(msg) < 8:
+                continue
+            done_trace = int.from_bytes(msg[:8], "little", signed=False)
+            sent = sent_at_ns.pop(done_trace, None)
+            if sent is not None:
+                latencies_us.append((time.perf_counter_ns() - sent) / 1000.0)
+            if time.time() >= send_deadline:
+                break
+        if time.time() >= send_deadline:
+            break
         sent_at_ns[trace] = time.perf_counter_ns()
         pub.send(trace.to_bytes(8, "little", signed=False) + payload)
 
