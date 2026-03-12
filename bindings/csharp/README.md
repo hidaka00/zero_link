@@ -59,3 +59,10 @@ Daemon mode:
 ```bash
 dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -- daemon://local
 ```
+
+Mode examples:
+
+```bash
+dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -- daemon://local publish-string audio/asr/text hello
+dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj -- daemon://local subscribe-once audio/asr/text hello 4000
+```

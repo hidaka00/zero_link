@@ -98,6 +98,16 @@ jobs:
           python -m unittest discover -v -s bindings/python/tests -p 'test_*.py'
           export ZEROLINK_NATIVE_LIB="$PWD/target/debug/libzl_ffi.so"
           dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- daemon://local
+          dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- daemon://local subscribe-once audio/asr/text ci-py-to-cs 4000 &
+          cs_sub_pid=$!
+          sleep 0.2
+          python bindings/python/examples/cross_lang_smoke.py --endpoint daemon://local --mode publish-string --topic audio/asr/text --message ci-py-to-cs
+          wait "$cs_sub_pid"
+          python bindings/python/examples/cross_lang_smoke.py --endpoint daemon://local --mode subscribe-once --topic audio/asr/text --message ci-cs-to-py --timeout-ms 4000 &
+          py_sub_pid=$!
+          sleep 0.2
+          dotnet run --project bindings/csharp/smoke/ZerolinkSmoke/ZerolinkSmoke.csproj --configuration Release -- daemon://local publish-string audio/asr/text ci-cs-to-py
+          wait "$py_sub_pid"
           kill "$pid"
           wait "$pid" || true
 

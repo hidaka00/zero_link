@@ -33,6 +33,13 @@ Scalar helper demo:
 PYTHONPATH=bindings/python/src python3 bindings/python/examples/scalars_demo.py
 ```
 
+Cross-language helper (daemon endpoint):
+
+```bash
+PYTHONPATH=bindings/python/src python3 bindings/python/examples/cross_lang_smoke.py --endpoint daemon://local --mode publish-string --topic audio/asr/text --message hello
+PYTHONPATH=bindings/python/src python3 bindings/python/examples/cross_lang_smoke.py --endpoint daemon://local --mode subscribe-once --topic audio/asr/text --message hello --timeout-ms 4000
+```
+
 Daemon example (requires `connectord` running on `daemon://local`):
 
 ```bash

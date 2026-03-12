@@ -249,6 +249,7 @@ ABI 互換ポリシー:
 - `bindings/python` に `ctypes` ベースの MVP ラッパー（open/publish/subscribe/close）と smoke 例を追加済み。
 - `bindings/csharp` に P/Invoke ベースの MVP ラッパー（open/publish/subscribe/health）と sample/smoke 雛形を追加済み。
 - CI に C# smoke（Linux/Windows の local、Linux/Windows の daemon、schema codec 単体）を追加済み。
+- CI (Linux daemon smoke) に Python↔C# の cross-language publish/subscribe 相互検証を追加済み。
 - `docs/schemas` に標準 `schema_id`（int64/int32/uint64/float64/float32/bool/timestamp/string/image/bytes_with_mime）の MVP 定義を追加済み。
 - 残タスク: 運用データに合わせて fail gate の既定閾値を段階的に引き締める。
 
