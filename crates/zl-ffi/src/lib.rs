@@ -344,6 +344,9 @@ const DAEMON_SUBSCRIBE_OPEN_RETRIES: u32 = 10;
 const DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS: u64 = 100;
 const DAEMON_REQUEST_RETRIES: u32 = 5;
 const DAEMON_REQUEST_BACKOFF_MS: u64 = 50;
+const DAEMON_RESPONSE_BUF_BYTES_DEFAULT: usize = 1024 * 1024;
+const DAEMON_RESPONSE_BUF_BYTES_MIN: usize = 4096;
+const DAEMON_RESPONSE_BUF_BYTES_MAX: usize = 8 * 1024 * 1024;
 
 fn test_hooks_enabled() -> bool {
     cfg!(debug_assertions)
@@ -387,6 +390,14 @@ fn daemon_request_backoff_ms() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(DAEMON_REQUEST_BACKOFF_MS)
+}
+
+fn daemon_response_buf_bytes() -> usize {
+    std::env::var("ZL_DAEMON_RESPONSE_BUF_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(DAEMON_RESPONSE_BUF_BYTES_MIN, DAEMON_RESPONSE_BUF_BYTES_MAX))
+        .unwrap_or(DAEMON_RESPONSE_BUF_BYTES_DEFAULT)
 }
 
 fn stream_test_force_connect_fail() -> bool {
@@ -542,7 +553,7 @@ pub unsafe extern "C" fn zl_client_open(
         let Some(endpoint_str) = daemon_endpoint.as_deref() else {
             return ZlStatus::InvalidArg;
         };
-        let mut resp = [0u8; 2048];
+        let mut resp = vec![0u8; daemon_response_buf_bytes()];
         let len = match zl_ipc::control_request(endpoint_str, b"health", &mut resp) {
             Ok(v) => v,
             Err(err) => return from_ipc_error(err),
@@ -653,7 +664,7 @@ pub unsafe extern "C" fn zl_publish(
             Ok(v) => v,
             Err(s) => return s,
         };
-        let mut resp = [0u8; 1024];
+        let mut resp = vec![0u8; daemon_response_buf_bytes()];
         let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
             Err(s) => return s,
@@ -710,7 +721,7 @@ pub unsafe extern "C" fn zl_subscribe(
         } else {
             subscribe_request_body(&topic_str)
         };
-        let mut sub_resp = [0u8; 512];
+        let mut sub_resp = vec![0u8; daemon_response_buf_bytes()];
         let session = match open_daemon_subscription_session(&endpoint, &sub_req, &mut sub_resp) {
             Ok(v) => v,
             Err(s) => return s,
@@ -738,7 +749,7 @@ pub unsafe extern "C" fn zl_subscribe(
                     }
 
                     if use_pull_fallback {
-                        let mut resp = [0u8; 4096];
+                        let mut resp = vec![0u8; daemon_response_buf_bytes()];
                         match zl_ipc::control_request(&endpoint, &poll_req, &mut resp) {
                             Ok(len) => {
                                 if let Ok(DaemonPollResponse::Message { header, payload }) =
@@ -822,7 +833,7 @@ pub unsafe extern "C" fn zl_subscribe(
                             }
                             continue;
                         }
-                        let mut reopen_resp = [0u8; 512];
+                        let mut reopen_resp = vec![0u8; daemon_response_buf_bytes()];
                         let reopen_len = match new_session.request(&sub_req, &mut reopen_resp) {
                             Ok(v) => v,
                             Err(_) => {
@@ -861,7 +872,7 @@ pub unsafe extern "C" fn zl_subscribe(
                         reconnect_failures = 0;
                     }
 
-                    let mut resp = [0u8; 4096];
+                    let mut resp = vec![0u8; daemon_response_buf_bytes()];
                     let recv_result = active_session
                         .as_ref()
                         .expect("session is set above")
@@ -921,7 +932,7 @@ pub unsafe extern "C" fn zl_subscribe(
                 if stop_rx.try_recv().is_ok() {
                     break;
                 }
-                let mut resp = [0u8; 4096];
+                let mut resp = vec![0u8; daemon_response_buf_bytes()];
                 match session.request(&poll_req, &mut resp) {
                     Ok(len) => {
                         if let Ok(DaemonPollResponse::Message { header, payload }) =
@@ -1033,7 +1044,7 @@ pub unsafe extern "C" fn zl_unsubscribe(client: *mut ZlClient, topic: *const c_c
     let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = unsubscribe_request_body(topic_str);
-        let mut resp = [0u8; 512];
+        let mut resp = vec![0u8; daemon_response_buf_bytes()];
         let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
             Err(s) => return s,
@@ -1140,7 +1151,7 @@ pub unsafe extern "C" fn zl_daemon_health(
         Ok(v) => v,
         Err(s) => return s,
     };
-    let mut resp = [0u8; 4096];
+    let mut resp = vec![0u8; daemon_response_buf_bytes()];
     let len = match daemon_control_request_with_retry(endpoint_str, b"health", &mut resp) {
         Ok(v) => v,
         Err(s) => return s,
@@ -1193,7 +1204,7 @@ pub unsafe extern "C" fn zl_send_control(
     let daemon_endpoint = unsafe { &(*client).inner.daemon_endpoint };
     if let Some(endpoint) = daemon_endpoint.as_deref() {
         let req = control_request_body(&body);
-        let mut resp = [0u8; 512];
+        let mut resp = vec![0u8; daemon_response_buf_bytes()];
         let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
             Ok(v) => v,
             Err(s) => return s,
