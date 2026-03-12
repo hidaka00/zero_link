@@ -420,6 +420,13 @@ fn stream_test_force_reopen_fail() -> bool {
     )
 }
 
+fn daemon_decode_debug_enabled() -> bool {
+    matches!(
+        std::env::var("ZL_DAEMON_DECODE_DEBUG"),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true")
+    )
+}
+
 fn report_stream_fallback_metric(endpoint: &str, reason: &str) {
     let req = format!("metric:stream_fallback_to_pull:{reason}");
     let mut resp = [0u8; 256];
@@ -934,10 +941,8 @@ pub unsafe extern "C" fn zl_subscribe(
                 }
                 let mut resp = vec![0u8; daemon_response_buf_bytes()];
                 match session.request(&poll_req, &mut resp) {
-                    Ok(len) => {
-                        if let Ok(DaemonPollResponse::Message { header, payload }) =
-                            serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
-                        {
+                    Ok(len) => match serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len]) {
+                        Ok(DaemonPollResponse::Message { header, payload }) => {
                             let header_ffi = ZlMsgHeader {
                                 msg_type: header.msg_type,
                                 timestamp_ns: header.timestamp_ns,
@@ -959,7 +964,16 @@ pub unsafe extern "C" fn zl_subscribe(
                                 user_data_addr as *mut c_void,
                             );
                         }
-                    }
+                        Ok(DaemonPollResponse::Empty) => {}
+                        Err(err) => {
+                            if daemon_decode_debug_enabled() {
+                                eprintln!(
+                                    "zl-ffi: daemon poll decode failed len={} err={}",
+                                    len, err
+                                );
+                            }
+                        }
+                    },
                     Err(IpcError::Disconnected) => {
                         thread::sleep(Duration::from_millis(20));
                     }

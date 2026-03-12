@@ -48,6 +48,15 @@ All scenarios for default transports:
 bash benchmarks/runners/run_all.sh
 ```
 
+Notes:
+- Default `zerolink` run includes `p2p_small` and `p2p_large`.
+- Use `BENCH_SCENARIOS_ZEROLINK` to override, e.g.:
+
+```bash
+BENCH_SCENARIOS_ZEROLINK="benchmarks/scenarios/p2p_small.json benchmarks/scenarios/p2p_xlarge.json" \
+bash benchmarks/runners/run_all.sh
+```
+
 Daemon payload-size sweep (`zerolink`):
 
 ```bash
