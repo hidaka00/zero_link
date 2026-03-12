@@ -104,6 +104,7 @@ def run_zerolink(s: Scenario) -> dict[str, Any]:
         done = threading.Event()
         total_needed = s.messages
         received_count = 0
+        sent_count = 0
 
         def on_msg(_topic: str, header: Any, _payload: bytes) -> None:
             nonlocal received_count
@@ -140,29 +141,44 @@ def run_zerolink(s: Scenario) -> dict[str, Any]:
                 with lock:
                     sent_at_ns[trace_id] = time.perf_counter_ns()
                 client.publish(s.topic, payload, header=MsgHeader(trace_id=trace_id))
+                sent_count += 1
 
             if not done.wait(timeout=s.timeout_ms / 1000.0):
                 # continue to compute with partial result
                 pass
             end_ns = time.perf_counter_ns()
+            daemon_dropped_messages = None
+            if s.endpoint.startswith("daemon://"):
+                try:
+                    health = client.health(s.endpoint)
+                    daemon_dropped_messages = int(health.get("dropped_messages", -1))
+                except Exception:
+                    daemon_dropped_messages = None
             client.unsubscribe(s.topic)
 
         latencies_us.sort()
         received = len(latencies_us)
-        dropped = max(0, s.messages - received)
+        unsent = max(0, s.messages - sent_count)
+        delivery_dropped = max(0, sent_count - received)
         duration_s = max(1e-9, (end_ns - start_ns) / 1_000_000_000.0)
         throughput = received / duration_s
-        return {
+        result = {
             "transport": "zerolink",
             "scenario": s.name,
             "payload_bytes": s.payload_bytes,
             "messages": s.messages,
+            "sent_messages": sent_count,
             "received_messages": received,
-            "dropped_messages": dropped,
+            "unsent_messages": unsent,
+            "delivery_dropped_messages": delivery_dropped,
+            "dropped_messages": unsent + delivery_dropped,
             "p50_us": round(percentile_us(latencies_us, 0.50), 2),
             "p95_us": round(percentile_us(latencies_us, 0.95), 2),
             "throughput_msg_s": round(throughput, 2),
         }
+        if daemon_dropped_messages is not None:
+            result["daemon_dropped_messages"] = daemon_dropped_messages
+        return result
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -192,6 +208,7 @@ def run_zeromq(s: Scenario) -> dict[str, Any]:
     payload = b"x" * s.payload_bytes
     sent_at_ns: dict[int, int] = {}
     latencies_us: list[float] = []
+    sent_count = 0
 
     # Warmup
     for i in range(s.warmup_messages):
@@ -220,6 +237,7 @@ def run_zeromq(s: Scenario) -> dict[str, Any]:
             break
         sent_at_ns[trace] = time.perf_counter_ns()
         pub.send(trace.to_bytes(8, "little", signed=False) + payload)
+        sent_count += 1
 
     deadline = time.time() + (s.timeout_ms / 1000.0)
     while time.time() < deadline and len(latencies_us) < s.messages:
@@ -242,7 +260,8 @@ def run_zeromq(s: Scenario) -> dict[str, Any]:
 
     latencies_us.sort()
     received = len(latencies_us)
-    dropped = max(0, s.messages - received)
+    unsent = max(0, s.messages - sent_count)
+    delivery_dropped = max(0, sent_count - received)
     duration_s = max(1e-9, (end_ns - start_ns) / 1_000_000_000.0)
     throughput = received / duration_s
     return {
@@ -250,8 +269,11 @@ def run_zeromq(s: Scenario) -> dict[str, Any]:
         "scenario": s.name,
         "payload_bytes": s.payload_bytes,
         "messages": s.messages,
+        "sent_messages": sent_count,
         "received_messages": received,
-        "dropped_messages": dropped,
+        "unsent_messages": unsent,
+        "delivery_dropped_messages": delivery_dropped,
+        "dropped_messages": unsent + delivery_dropped,
         "p50_us": round(percentile_us(latencies_us, 0.50), 2),
         "p95_us": round(percentile_us(latencies_us, 0.95), 2),
         "throughput_msg_s": round(throughput, 2),

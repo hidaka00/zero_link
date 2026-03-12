@@ -79,8 +79,11 @@ Each run records:
 - `p50_us`
 - `p95_us`
 - `throughput_msg_s`
+- `sent_messages`
 - `received_messages`
-- `dropped_messages`
+- `unsent_messages` (not published before send deadline)
+- `delivery_dropped_messages` (published but not received)
+- `dropped_messages` (= unsent + delivery_dropped)
 - `transport`, `scenario`, `timestamp`
 
 Scenario knobs:
