@@ -71,6 +71,14 @@ Results:
 
 - Raw: `benchmarks/results/raw/*.json`
 - Summary CSV: `benchmarks/results/summary/latest.csv`
+- Comparison Markdown table (latest by transport/scenario):
+
+```bash
+python3 benchmarks/scripts/render_compare_markdown.py \
+  --output benchmarks/results/summary/latest_compare.md
+```
+Default is common scenarios only (both `zerolink` and `zeromq`). Add `--include-partial` to include one-sided rows.
+
 - Sweep CSV: `benchmarks/results/summary/sweep_zerolink_daemon_latest.csv`
 
 ## Metrics

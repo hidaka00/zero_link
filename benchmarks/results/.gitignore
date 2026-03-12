@@ -1,5 +1,6 @@
 raw/*.json
 raw/*.log
 summary/*.csv
+summary/*.md
 !raw/.gitkeep
 !summary/.gitkeep
