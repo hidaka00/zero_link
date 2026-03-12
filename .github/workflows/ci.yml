@@ -88,7 +88,7 @@ jobs:
           [ "${fallback_reopen:-0}" -ge 1 ]
           [ "${fallback_recv:-0}" -ge 1 ]
           ZL_ENDPOINT=daemon://local target/debug/zl-cli smoke-control _sys/control reload '{}'
-          ./scripts/bindings/build_native.sh
+          bash ./scripts/bindings/build_native.sh
           python3 -m venv .venv-zerolink-daemon-ci
           source .venv-zerolink-daemon-ci/bin/activate
           python -m pip install -e bindings/python
@@ -286,7 +286,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/bindings/build_native.sh
+          bash ./scripts/bindings/build_native.sh
           python3 -m venv .venv-zerolink-ci
           source .venv-zerolink-ci/bin/activate
           python -m pip install -e bindings/python
