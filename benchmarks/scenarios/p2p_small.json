@@ -1,0 +1,10 @@
+{
+  "name": "p2p_small",
+  "endpoint": "daemon://local",
+  "topic": "bench/p2p/small",
+  "payload_bytes": 1024,
+  "messages": 500,
+  "warmup_messages": 100,
+  "timeout_ms": 8000,
+  "queue_limit": 2000
+}

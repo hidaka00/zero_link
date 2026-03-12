@@ -1,0 +1,10 @@
+{
+  "name": "p2p_xlarge",
+  "endpoint": "daemon://local",
+  "topic": "bench/p2p/xlarge",
+  "payload_bytes": 1048576,
+  "messages": 40,
+  "warmup_messages": 10,
+  "timeout_ms": 15000,
+  "queue_limit": 8000
+}

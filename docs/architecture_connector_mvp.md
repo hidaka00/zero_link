@@ -251,6 +251,7 @@ ABI 互換ポリシー:
 - CI に C# smoke（Linux/Windows の local、Linux/Windows の daemon、schema codec 単体）を追加済み。
 - CI (Linux daemon smoke) に Python↔C# の cross-language publish/subscribe 相互検証を追加済み。
 - `docs/schemas` に標準 `schema_id`（int64/int32/uint64/float64/float32/bool/timestamp/string/image/bytes_with_mime）の MVP 定義を追加済み。
+- `benchmarks/` にシナリオ駆動の比較ハーネス（zerolink/zeromq, raw JSON + summary CSV）を追加済み。
 - 残タスク: 運用データに合わせて fail gate の既定閾値を段階的に引き締める。
 
 ## 10. MVP 固定値（実装開始前に確定）

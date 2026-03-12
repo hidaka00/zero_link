@@ -1,0 +1,4 @@
+raw/*.json
+summary/*.csv
+!raw/.gitkeep
+!summary/.gitkeep

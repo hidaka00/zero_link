@@ -1,0 +1,10 @@
+{
+  "name": "p2p_large",
+  "endpoint": "daemon://local",
+  "topic": "bench/p2p/large",
+  "payload_bytes": 65536,
+  "messages": 200,
+  "warmup_messages": 40,
+  "timeout_ms": 12000,
+  "queue_limit": 4000
+}
