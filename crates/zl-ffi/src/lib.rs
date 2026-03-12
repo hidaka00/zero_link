@@ -21,6 +21,7 @@ pub struct ZlClient {
 struct Client {
     transport: ClientTransport,
     daemon_endpoint: Option<String>,
+    daemon_publish_session: Mutex<Option<ControlSession>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
     buffers: Mutex<BufferStore>,
 }
@@ -344,6 +345,8 @@ const DAEMON_SUBSCRIBE_OPEN_RETRIES: u32 = 10;
 const DAEMON_SUBSCRIBE_OPEN_BACKOFF_MS: u64 = 100;
 const DAEMON_REQUEST_RETRIES: u32 = 5;
 const DAEMON_REQUEST_BACKOFF_MS: u64 = 50;
+const DAEMON_POLL_EMPTY_BACKOFF_MS: u64 = 1;
+const DAEMON_POLL_ERROR_BACKOFF_MS: u64 = 5;
 const DAEMON_RESPONSE_BUF_BYTES_DEFAULT: usize = 1024 * 1024;
 const DAEMON_RESPONSE_BUF_BYTES_MIN: usize = 4096;
 const DAEMON_RESPONSE_BUF_BYTES_MAX: usize = 8 * 1024 * 1024;
@@ -390,6 +393,20 @@ fn daemon_request_backoff_ms() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(DAEMON_REQUEST_BACKOFF_MS)
+}
+
+fn daemon_poll_empty_backoff_ms() -> u64 {
+    std::env::var("ZL_DAEMON_POLL_EMPTY_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DAEMON_POLL_EMPTY_BACKOFF_MS)
+}
+
+fn daemon_poll_error_backoff_ms() -> u64 {
+    std::env::var("ZL_DAEMON_POLL_ERROR_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DAEMON_POLL_ERROR_BACKOFF_MS)
 }
 
 fn daemon_response_buf_bytes() -> usize {
@@ -526,6 +543,58 @@ fn daemon_control_request_with_retry(
     Err(last_status)
 }
 
+fn daemon_control_request_with_retry_reuse_session(
+    endpoint: &str,
+    request: &[u8],
+    response_buf: &mut [u8],
+    session_slot: &mut Option<ControlSession>,
+) -> Result<usize, ZlStatus> {
+    let retries = daemon_request_retries();
+    let backoff_ms = daemon_request_backoff_ms();
+    let mut last_status = ZlStatus::IpcDisconnected;
+
+    for attempt in 0..retries {
+        if session_slot.is_none() {
+            match ControlSession::connect(endpoint) {
+                Ok(session) => *session_slot = Some(session),
+                Err(err) => {
+                    let status = from_ipc_error(err);
+                    last_status = status;
+                    if !matches!(status, ZlStatus::IpcDisconnected) {
+                        return Err(status);
+                    }
+                    if attempt + 1 < retries {
+                        thread::sleep(Duration::from_millis(backoff_ms));
+                    }
+                    continue;
+                }
+            }
+        }
+
+        match session_slot
+            .as_ref()
+            .expect("session ensured above")
+            .request(request, response_buf)
+        {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                let status = from_ipc_error(err);
+                last_status = status;
+                if matches!(status, ZlStatus::IpcDisconnected) {
+                    *session_slot = None;
+                    if attempt + 1 < retries {
+                        thread::sleep(Duration::from_millis(backoff_ms));
+                    }
+                    continue;
+                }
+                return Err(status);
+            }
+        };
+    }
+
+    Err(last_status)
+}
+
 #[no_mangle]
 /// # Safety
 /// `out_client` must be a valid writable pointer. If non-null, `endpoint` must
@@ -574,6 +643,7 @@ pub unsafe extern "C" fn zl_client_open(
         inner: Client {
             transport: ClientTransport::in_memory(),
             daemon_endpoint,
+            daemon_publish_session: Mutex::new(None),
             subscriptions: Mutex::new(HashMap::new()),
             buffers: Mutex::new(BufferStore {
                 shm: ShmManager::default(),
@@ -671,8 +741,18 @@ pub unsafe extern "C" fn zl_publish(
             Ok(v) => v,
             Err(s) => return s,
         };
+        let daemon_publish_session = unsafe { &(*client).inner.daemon_publish_session };
+        let mut session_guard = match daemon_publish_session.lock() {
+            Ok(v) => v,
+            Err(_) => return ZlStatus::Internal,
+        };
         let mut resp = vec![0u8; daemon_response_buf_bytes()];
-        let len = match daemon_control_request_with_retry(endpoint, &req, &mut resp) {
+        let len = match daemon_control_request_with_retry_reuse_session(
+            endpoint,
+            &req,
+            &mut resp,
+            &mut *session_guard,
+        ) {
             Ok(v) => v,
             Err(s) => return s,
         };
@@ -737,6 +817,8 @@ pub unsafe extern "C" fn zl_subscribe(
         if use_stream {
             let poll_req = poll_request_body(&topic_str);
             thread::spawn(move || {
+                let poll_empty_backoff_ms = daemon_poll_empty_backoff_ms();
+                let poll_error_backoff_ms = daemon_poll_error_backoff_ms();
                 let fallback_threshold = stream_reconnect_failures_before_pull_fallback();
                 let force_connect_fail = stream_test_force_connect_fail();
                 let force_reopen_fail = stream_test_force_reopen_fail();
@@ -759,34 +841,43 @@ pub unsafe extern "C" fn zl_subscribe(
                         let mut resp = vec![0u8; daemon_response_buf_bytes()];
                         match zl_ipc::control_request(&endpoint, &poll_req, &mut resp) {
                             Ok(len) => {
-                                if let Ok(DaemonPollResponse::Message { header, payload }) =
-                                    serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len])
-                                {
-                                    let header_ffi = ZlMsgHeader {
-                                        msg_type: header.msg_type,
-                                        timestamp_ns: header.timestamp_ns,
-                                        size: header.size,
-                                        schema_id: header.schema_id,
-                                        trace_id: header.trace_id,
-                                    };
-                                    let header_ptr = &header_ffi as *const ZlMsgHeader;
-                                    let payload_ptr = if payload.is_empty() {
-                                        std::ptr::null()
-                                    } else {
-                                        payload.as_ptr() as *const c_void
-                                    };
-                                    callback(
-                                        topic_c.as_ptr(),
-                                        header_ptr,
-                                        payload_ptr,
-                                        std::ptr::null(),
-                                        user_data_addr as *mut c_void,
-                                    );
+                                match serde_cbor::from_slice::<DaemonPollResponse>(&resp[..len]) {
+                                    Ok(DaemonPollResponse::Message { header, payload }) => {
+                                        let header_ffi = ZlMsgHeader {
+                                            msg_type: header.msg_type,
+                                            timestamp_ns: header.timestamp_ns,
+                                            size: header.size,
+                                            schema_id: header.schema_id,
+                                            trace_id: header.trace_id,
+                                        };
+                                        let header_ptr = &header_ffi as *const ZlMsgHeader;
+                                        let payload_ptr = if payload.is_empty() {
+                                            std::ptr::null()
+                                        } else {
+                                            payload.as_ptr() as *const c_void
+                                        };
+                                        callback(
+                                            topic_c.as_ptr(),
+                                            header_ptr,
+                                            payload_ptr,
+                                            std::ptr::null(),
+                                            user_data_addr as *mut c_void,
+                                        );
+                                    }
+                                    Ok(DaemonPollResponse::Empty) => {
+                                        thread::sleep(Duration::from_millis(
+                                            poll_empty_backoff_ms,
+                                        ));
+                                    }
+                                    Err(_) => {
+                                        thread::sleep(Duration::from_millis(
+                                            poll_error_backoff_ms,
+                                        ));
+                                    }
                                 }
                             }
-                            Err(_) => thread::sleep(Duration::from_millis(20)),
+                            Err(_) => thread::sleep(Duration::from_millis(poll_error_backoff_ms)),
                         }
-                        thread::sleep(Duration::from_millis(20));
                         continue;
                     }
 
@@ -936,6 +1027,8 @@ pub unsafe extern "C" fn zl_subscribe(
         } else {
             let poll_req = poll_request_body(&topic_str);
             thread::spawn(move || loop {
+                let poll_empty_backoff_ms = daemon_poll_empty_backoff_ms();
+                let poll_error_backoff_ms = daemon_poll_error_backoff_ms();
                 if stop_rx.try_recv().is_ok() {
                     break;
                 }
@@ -964,7 +1057,9 @@ pub unsafe extern "C" fn zl_subscribe(
                                 user_data_addr as *mut c_void,
                             );
                         }
-                        Ok(DaemonPollResponse::Empty) => {}
+                        Ok(DaemonPollResponse::Empty) => {
+                            thread::sleep(Duration::from_millis(poll_empty_backoff_ms));
+                        }
                         Err(err) => {
                             if daemon_decode_debug_enabled() {
                                 eprintln!(
@@ -972,16 +1067,16 @@ pub unsafe extern "C" fn zl_subscribe(
                                     len, err
                                 );
                             }
+                            thread::sleep(Duration::from_millis(poll_error_backoff_ms));
                         }
                     },
                     Err(IpcError::Disconnected) => {
-                        thread::sleep(Duration::from_millis(20));
+                        thread::sleep(Duration::from_millis(poll_error_backoff_ms));
                     }
                     Err(_) => {
-                        thread::sleep(Duration::from_millis(20));
+                        thread::sleep(Duration::from_millis(poll_error_backoff_ms));
                     }
                 }
-                thread::sleep(Duration::from_millis(20));
             })
         }
     } else {
